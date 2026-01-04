@@ -12,8 +12,10 @@ class UserProfilePage extends StatefulWidget {
 }
 
 class _UserProfilePageState extends State<UserProfilePage> {
-  final Color primaryTeal = const Color(0xFF80CBC4);
-  final Color darkTeal = const Color(0xFF00796B);
+  final Color primaryTeal = Color(0xFF00796B);
+  final Color lightTeal = Color(0xFF4DB6AC);
+  final Color cardGrey = Color(0xFFF8F9FA);
+  final Color darkGrey = Color(0xFF2C3E50);
 
   AppUser? user;
   bool isLoading = true;
@@ -70,7 +72,7 @@ class _UserProfilePageState extends State<UserProfilePage> {
             CircleAvatar(
               radius: 50,
               backgroundImage: user!.imageUrl != null ? NetworkImage(user!.imageUrl!) : null,
-              child: user!.imageUrl == null ? Icon(Icons.person, size: 50, color: darkTeal) : null,
+              child: user!.imageUrl == null ? Icon(Icons.person, size: 50, color: primaryTeal) : null,
             ),
             const SizedBox(height: 20),
             Text(user!.name, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),

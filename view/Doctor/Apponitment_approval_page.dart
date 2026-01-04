@@ -432,10 +432,15 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
   final AppointmentService _appointmentService = AppointmentService();
   final NotificationService _notificationService = NotificationService();
 
-  // DignoVet Theme Colors
-  final Color primaryTeal = const Color(0xFF80CBC4);
-  final Color darkTeal = const Color(0xFF00796B);
-  final Color lightGrey = const Color(0xFFF5F5F5);
+  // DignoVet Theme Colors (matching doctor_profile.dart)
+  final Color primaryTeal = Color(0xFF00796B);
+  final Color lightTeal = Color(0xFF4DB6AC);
+  final Color cardGrey = Color(0xFFF8F9FA);
+  final Color darkGrey = Color(0xFF2C3E50);
+  final Color lightGrey = Color(0xFFF5F5F5);
+  
+  // Reference for backward compatibility
+  Color get darkTeal => primaryTeal;
 
   AppUser? user;
   AppUser? doctor; // Current doctor info

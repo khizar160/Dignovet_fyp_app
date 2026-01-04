@@ -16,11 +16,31 @@ class DoctorNotificationsPage extends StatefulWidget {
       _DoctorNotificationsPageState();
 }
 
-class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> {
+class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with SingleTickerProviderStateMixin {
   final NotificationService _notificationService = NotificationService();
-  final Color primaryTeal = const Color(0xFF80CBC4);
-  final Color darkTeal = const Color(0xFF00796B);
-  final Color scaffoldBg = Colors.white;
+  final Color primaryTeal = Color(0xFF00796B);
+  final Color lightTeal = Color(0xFF4DB6AC);
+  final Color cardGrey = Color(0xFFF8F9FA);
+  final Color darkGrey = Color(0xFF2C3E50);
+  final Color scaffoldBg = Color(0xFFF5F7FA);
+  
+  late AnimationController _animationController;
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _animationController.forward();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -36,145 +56,169 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> {
     }
 
     return Scaffold(
-      backgroundColor: scaffoldBg,
-      body: Column(
-        children: [
-          _buildTopHeader(),
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: () async {
-                log('[DoctorNotificationsPage] Refresh triggered');
-                await Future.delayed(const Duration(seconds: 1));
-                setState(() {});
-              },
-              child: StreamBuilder<QuerySnapshot>(
-                key: ValueKey('doctor_notifications_$doctorId'),
-                stream: FirebaseFirestore.instance
-                    .collection('notifications')
-                    .where('receiverId', isEqualTo: doctorId)
-                    .orderBy('createdAt', descending: true)
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  log(
-                    '[DoctorNotificationsPage] StreamBuilder snapshot state = ${snapshot.connectionState}',
-                  );
-
-                  if (!snapshot.hasData) {
-                    log(
-                      '[DoctorNotificationsPage] No data yet, showing loading indicator',
-                    );
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  final notifications = snapshot.data!.docs;
-                  log(
-                    '[DoctorNotificationsPage] Notifications received: ${notifications.length} items',
-                  );
-
-                  if (notifications.isEmpty) {
-                    log('[DoctorNotificationsPage] No notifications found');
-                    return Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.notifications_none,
-                            size: 64,
-                            color: Colors.grey[400],
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'No notifications yet',
-                            style: TextStyle(
-                              color: Colors.grey[600],
-                              fontSize: 16,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-
-                  return ListView.builder(
-                    padding: const EdgeInsets.only(top: 10, bottom: 80),
-                    itemCount: notifications.length,
-                    physics: const BouncingScrollPhysics(),
-                    itemBuilder: (context, index) {
-                      final notif =
-                          notifications[index].data() as Map<String, dynamic>;
-                      log(
-                        '[DoctorNotificationsPage] Rendering notification #$index, id=${notifications[index].id}',
-                      );
-                      return _buildNotificationItem(
-                        notif,
-                        notifications[index].id,
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [primaryTeal, lightTeal.withOpacity(0.3), Colors.white],
+            stops: const [0.0, 0.3, 0.5],
           ),
-        ],
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              _buildModernHeader(),
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: scaffoldBg,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(30),
+                      topRight: Radius.circular(30),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, -2),
+                      ),
+                    ],
+                  ),
+                  child: RefreshIndicator(
+                    onRefresh: () async {
+                      log('[DoctorNotificationsPage] Refresh triggered');
+                      await Future.delayed(const Duration(seconds: 1));
+                      setState(() {});
+                    },
+                    color: primaryTeal,
+                    child: StreamBuilder<QuerySnapshot>(
+                      key: ValueKey('doctor_notifications_$doctorId'),
+                      stream: FirebaseFirestore.instance
+                          .collection('notifications')
+                          .where('receiverId', isEqualTo: doctorId)
+                          .orderBy('createdAt', descending: true)
+                          .snapshots(),
+                      builder: (context, snapshot) {
+                        log(
+                          '[DoctorNotificationsPage] StreamBuilder snapshot state = ${snapshot.connectionState}',
+                        );
+
+                        if (!snapshot.hasData) {
+                          log(
+                            '[DoctorNotificationsPage] No data yet, showing loading indicator',
+                          );
+                          return Center(
+                            child: CircularProgressIndicator(color: primaryTeal),
+                          );
+                        }
+
+                        final notifications = snapshot.data!.docs;
+                        log(
+                          '[DoctorNotificationsPage] Notifications received: ${notifications.length} items',
+                        );
+
+                        if (notifications.isEmpty) {
+                          log('[DoctorNotificationsPage] No notifications found');
+                          return _buildEmptyState();
+                        }
+
+                        return ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(20, 30, 20, 80),
+                          itemCount: notifications.length,
+                          physics: const BouncingScrollPhysics(),
+                          itemBuilder: (context, index) {
+                            final notif =
+                                notifications[index].data() as Map<String, dynamic>;
+                            log(
+                              '[DoctorNotificationsPage] Rendering notification #$index, id=${notifications[index].id}',
+                            );
+                            return _buildModernNotificationCard(
+                              notif,
+                              notifications[index].id,
+                              index,
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildTopHeader() {
-    log('[DoctorNotificationsPage] Building top header');
+  Widget _buildModernHeader() {
+    log('[DoctorNotificationsPage] Building modern header');
     return Container(
-      padding: const EdgeInsets.only(top: 50, bottom: 30, left: 20, right: 20),
-      decoration: BoxDecoration(color: primaryTeal),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    onPressed: () {
-                      log('[DoctorNotificationsPage] Back button pressed');
-                      Navigator.pop(context);
-                    },
-                  ),
-                  const Text(
-                    'DignoVet',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back_ios_new,
+                      color: Colors.white, size: 20),
+                  onPressed: () {
+                    log('[DoctorNotificationsPage] Back button pressed');
+                    Navigator.pop(context);
+                  },
+                ),
               ),
               Row(
-                children: const [
-                  Icon(Icons.search, color: Colors.white, size: 26),
-                  SizedBox(width: 15),
-                  Icon(Icons.notifications_none, color: Colors.white, size: 26),
-                  SizedBox(width: 15),
-                  Icon(
-                    Icons.account_circle_outlined,
-                    color: Colors.white,
-                    size: 26,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: IconButton(
+                      icon: const Icon(Icons.search, color: Colors.white, size: 24),
+                      onPressed: () {},
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: IconButton(
+                      icon: const Icon(Icons.more_vert, color: Colors.white, size: 24),
+                      onPressed: () {},
+                    ),
                   ),
                 ],
               ),
             ],
           ),
           const SizedBox(height: 30),
-          const Center(
-            child: Text(
-              'Notifications',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 32,
-                fontWeight: FontWeight.w400,
-                letterSpacing: 1.2,
-              ),
+          const Text(
+            'Notifications',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 36,
+              fontWeight: FontWeight.bold,
+              letterSpacing: -1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Stay updated with your appointments',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.9),
+              fontSize: 16,
             ),
           ),
         ],
@@ -182,7 +226,47 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> {
     );
   }
 
-  Widget _buildNotificationItem(Map<String, dynamic> data, String notifId) {
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: primaryTeal.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.notifications_none_rounded,
+              size: 80,
+              color: primaryTeal.withOpacity(0.5),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'No notifications yet',
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: darkGrey,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            "You'll see new notifications here",
+            style: TextStyle(
+              fontSize: 15,
+              color: Colors.grey[600],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModernNotificationCard(
+      Map<String, dynamic> data, String notifId, int index) {
     final bool isAppointmentRequest = data['type'] == 'appointment_request';
     final bool isRead = data['isRead'] ?? false;
 
@@ -190,124 +274,172 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> {
       '[DoctorNotificationsPage] Building notification item - id=$notifId, isRead=$isRead',
     );
 
-    return GestureDetector(
-      onTap: () => _handleNotificationTap(data, notifId),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
-        padding: const EdgeInsets.all(15),
-        decoration: BoxDecoration(
-          color: isRead ? Colors.white : primaryTeal.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(15),
-          border: Border(
-            bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+    return TweenAnimationBuilder<double>(
+      duration: Duration(milliseconds: 300 + (index * 50)),
+      tween: Tween(begin: 0.0, end: 1.0),
+      builder: (context, value, child) {
+        return Transform.translate(
+          offset: Offset(0, 20 * (1 - value)),
+          child: Opacity(
+            opacity: value,
+            child: child,
           ),
-          boxShadow: isRead
-              ? null
-              : [
-                  BoxShadow(
-                    color: primaryTeal.withOpacity(0.1),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              height: 60,
-              width: 60,
-              decoration: BoxDecoration(
-                color: Colors.grey[100],
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Icon(
-                isAppointmentRequest
-                    ? Icons.event_note
-                    : Icons.notifications_outlined,
-                color: isAppointmentRequest ? darkTeal : Colors.grey[600],
-                size: 28,
-              ),
+        );
+      },
+      child: GestureDetector(
+        onTap: () => _handleNotificationTap(data, notifId),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: isRead ? Colors.white : primaryTeal.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: isRead
+                  ? Colors.grey[200]!
+                  : primaryTeal.withOpacity(0.3),
+              width: 1.5,
             ),
-            const SizedBox(width: 15),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          data['title'] ?? 'Notification',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                      Row(
-                        children: [
-                          Text(
-                            _formatTime(data['createdAt']),
-                            style: TextStyle(
-                              color: Colors.grey[600],
-                              fontSize: 12,
-                            ),
-                          ),
-                          if (!isRead) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: darkTeal,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ],
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                height: 60,
+                width: 60,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: isAppointmentRequest
+                        ? [primaryTeal.withOpacity(0.2), lightTeal.withOpacity(0.2)]
+                        : [Colors.grey[300]!, Colors.grey[200]!],
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    data['message'] ?? '',
-                    style: TextStyle(
-                      color: Colors.grey[700],
-                      fontSize: 14,
-                      height: 1.4,
-                    ),
-                  ),
-                  if (isAppointmentRequest) ...[
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: () => _handleViewDetails(data),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: darkTeal,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                        ),
-                        child: const Text(
-                          'View Details',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: (isAppointmentRequest ? primaryTeal : Colors.grey)
+                          .withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
                     ),
                   ],
-                ],
+                ),
+                child: Icon(
+                  isAppointmentRequest
+                      ? Icons.event_note_rounded
+                      : Icons.notifications_outlined,
+                  color: isAppointmentRequest ? primaryTeal : Colors.grey[600],
+                  size: 28,
+                ),
               ),
-            ),
-          ],
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            data['title'] ?? 'Notification',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 17,
+                              color: darkGrey,
+                            ),
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            Text(
+                              _formatTime(data['createdAt']),
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            if (!isRead) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: primaryTeal,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      data['message'] ?? '',
+                      style: TextStyle(
+                        color: Colors.grey[700],
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (isAppointmentRequest) ...[
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [primaryTeal, lightTeal],
+                            ),
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: primaryTeal.withOpacity(0.3),
+                                blurRadius: 8,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: ElevatedButton.icon(
+                            onPressed: () => _handleViewDetails(data),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              shadowColor: Colors.transparent,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            icon: const Icon(Icons.visibility_rounded,
+                                size: 18, color: Colors.white),
+                            label: const Text(
+                              'View Details',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -392,16 +524,22 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> {
         content: Row(
           children: [
             if (isLoading) ...[
-              const SizedBox(
+              SizedBox(
                 width: 20,
                 height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
               ),
               const SizedBox(width: 12),
             ],
             Expanded(child: Text(message)),
           ],
         ),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: darkGrey,
         duration: isLoading
             ? const Duration(seconds: 30)
             : const Duration(seconds: 3),
@@ -411,19 +549,7 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> {
 
   Future<void> _handleViewDetails(Map<String, dynamic> data) async {
     log('[DoctorNotificationsPage] View Details tapped');
-    _showSnackBar('Loading appointments...', isLoading: true);
-    await Future.delayed(const Duration(seconds: 2));
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const DoctorAppointmentRequestsPage()),
-    );
-    log('[DoctorNotificationsPage] Navigated to DoctorAppointmentRequestsPage');
-
-    // Force refresh after returning
-    if (mounted) {
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      setState(() {});
-    }
+    await _handleAppointmentNotification(data);
   }
 
   String _formatTime(Timestamp? timestamp) {

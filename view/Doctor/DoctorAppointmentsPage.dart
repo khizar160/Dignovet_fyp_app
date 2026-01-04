@@ -87,8 +87,10 @@ class DoctorAppointmentsPage extends StatefulWidget {
 }
 
 class _DoctorAppointmentsPageState extends State<DoctorAppointmentsPage> {
-  final Color primaryTeal = const Color(0xFF00796B);
-  final Color lightTeal = const Color(0xFF4DB6AC);
+  final Color primaryTeal = Color(0xFF00796B);
+  final Color lightTeal = Color(0xFF4DB6AC);
+  final Color cardGrey = Color(0xFFF8F9FA);
+  final Color darkGrey = Color(0xFF2C3E50);
 
   @override
   Widget build(BuildContext context) {

@@ -5,7 +5,7 @@ import 'package:flutter_application_1/model/appointment_model.dart';
 import 'package:flutter_application_1/services/Appointment Service/appointment_services.dart';
 import 'package:flutter_application_1/services/firebase_authentication/auth_api.dart';
 import 'package:flutter_application_1/services/notification service/notification_service.dart';
-import 'package:flutter_application_1/view/Doctor/Apponitment_approval_page.dart';
+import 'package:flutter_application_1/view/Doctor/Apponitment_approval_page_new.dart';
 
 class DoctorAppointmentRequestsPage extends StatefulWidget {
   const DoctorAppointmentRequestsPage({super.key});
@@ -19,6 +19,12 @@ class _DoctorAppointmentRequestsPageState
     extends State<DoctorAppointmentRequestsPage> {
   final AppointmentService _appointmentService = AppointmentService();
   final NotificationService _notificationService = NotificationService();
+
+  final Color primaryTeal = Color(0xFF00796B);
+  final Color lightTeal = Color(0xFF4DB6AC);
+  final Color cardGrey = Color(0xFFF8F9FA);
+  final Color darkGrey = Color(0xFF2C3E50);
+  final Color scaffoldBg = Color(0xFFF5F7FA);
 
   String _formatDate(Timestamp timestamp) {
     final date = timestamp.toDate().toLocal();
@@ -39,185 +45,518 @@ class _DoctorAppointmentRequestsPageState
     if (doctorId == null) {
       log('No doctor logged in');
       return Scaffold(
-        backgroundColor: Colors.white,
-        appBar: AppBar(
-          backgroundColor: const Color(0xFF80CBC4),
-          title: const Text('Pending Requests'),
-        ),
+        backgroundColor: scaffoldBg,
         body: const Center(child: Text('Please log in as doctor')),
       );
     }
 
     return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF80CBC4),
-        elevation: 0,
-        title: const Text(
-          'Pending Appointment Requests',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-        ),
-        centerTitle: true,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
-          onPressed: () {
-            log('Back button pressed');
-            Navigator.pop(context);
-          },
-        ),
-      ),
-      body: RefreshIndicator(
-        onRefresh: () async {
-          log('Pull-to-refresh triggered');
-          setState(() {}); // Trigger rebuild to refresh stream
-          await Future.delayed(const Duration(seconds: 1));
-        },
-        child: StreamBuilder<QuerySnapshot>(
-          key: ValueKey('doctor_appointment_requests_$doctorId'),
-          stream: _appointmentService.doctorAppointments(doctorId),
-          builder: (context, snapshot) {
-            log('StreamBuilder state: ${snapshot.connectionState}');
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              log('Stream waiting for data...');
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            if (snapshot.hasError) {
-              log('Error loading appointments: ${snapshot.error}');
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(
-                      Icons.error_outline,
-                      size: 64,
-                      color: Colors.red,
-                    ),
-                    const SizedBox(height: 16),
-                    Text('Error loading appointments: ${snapshot.error}'),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: () {
-                        log('Retry button pressed');
-                        setState(() {});
-                      },
-                      child: const Text('Retry'),
-                    ),
-                  ],
+      backgroundColor: primaryTeal,
+      body: Column(
+        children: [
+          _buildModernHeader(),
+          Expanded(
+            child: Container(
+              margin: const EdgeInsets.only(top: 10),
+              decoration: BoxDecoration(
+                color: scaffoldBg,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(35),
+                  topRight: Radius.circular(35),
                 ),
-              );
-            }
+              ),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(35),
+                  topRight: Radius.circular(35),
+                ),
+                child: RefreshIndicator(
+                  onRefresh: () async {
+                    log('Pull-to-refresh triggered');
+                    setState(() {}); // Trigger rebuild to refresh stream
+                    await Future.delayed(const Duration(seconds: 1));
+                  },
+                  color: primaryTeal,
+                  child: StreamBuilder<QuerySnapshot>(
+                    key: ValueKey('doctor_appointment_requests_$doctorId'),
+                    stream: _appointmentService.doctorAppointments(doctorId),
+                    builder: (context, snapshot) {
+                      log('StreamBuilder state: ${snapshot.connectionState}');
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        log('Stream waiting for data...');
+                        return Center(
+                          child: CircularProgressIndicator(color: primaryTeal),
+                        );
+                      }
 
-            if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-              log('No pending appointment requests found');
-              return const Center(child: Text('No pending requests'));
-            }
+                      if (snapshot.hasError) {
+                        log('Error loading appointments: ${snapshot.error}');
+                        return _buildErrorState();
+                      }
 
-            log(
-              'Appointments data received: ${snapshot.data!.docs.length} items',
-            );
-            final appointments = snapshot.data!.docs.map((doc) {
-              final appointment = AppointmentModel.fromMap(
-                doc.data() as Map<String, dynamic>,
-                doc.id,
-              );
-              log(
-                'Loaded appointment: ${appointment.id} for animal: ${appointment.animalName}',
-              );
-              return appointment;
-            }).toList();
+                      if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                        log('No pending appointment requests found');
+                        return _buildEmptyState();
+                      }
 
-            // Sort by date descending
-            appointments.sort((a, b) => b.date.compareTo(a.date));
+                      log(
+                        'Appointments data received: ${snapshot.data!.docs.length} items',
+                      );
+                      final appointments = snapshot.data!.docs.map((doc) {
+                        final appointment = AppointmentModel.fromMap(
+                          doc.data() as Map<String, dynamic>,
+                          doc.id,
+                        );
+                        log(
+                          'Loaded appointment: ${appointment.id} for animal: ${appointment.animalName}',
+                        );
+                        return appointment;
+                      }).toList();
 
-            return ListView.builder(
-              padding: const EdgeInsets.all(20),
-              itemCount: appointments.length,
-              itemBuilder: (context, index) {
-                final appointment = appointments[index];
-                return _buildAppointmentItem(appointment);
-              },
-            );
-          },
+                      // Sort by date descending
+                      appointments.sort((a, b) => b.date.compareTo(a.date));
+
+                      return ListView.builder(
+                        padding: const EdgeInsets.all(20),
+                        itemCount: appointments.length,
+                        physics: const BouncingScrollPhysics(),
+                        itemBuilder: (context, index) {
+                          final appointment = appointments[index];
+                          return _buildModernAppointmentCard(appointment, index);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModernHeader() {
+    return SafeArea(
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: IconButton(
+                    icon: const Icon(Icons.arrow_back_ios_new,
+                        color: Colors.white, size: 20),
+                    onPressed: () {
+                      log('Back button pressed');
+                      Navigator.pop(context);
+                    },
+                  ),
+                ),
+                const SizedBox(width: 15),
+                const Text(
+                  'DignoVet',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 30),
+            const Text(
+              'Appointment Requests',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                letterSpacing: -0.5,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Review pending appointment requests',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.9),
+                fontSize: 15,
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildAppointmentItem(AppointmentModel appointment) {
-    log(
-      'Building appointment item for: ${appointment.animalName}, id: ${appointment.id}',
-    );
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
-      decoration: BoxDecoration(
-        color: const Color(0xFF80CBC4),
-        borderRadius: BorderRadius.circular(30),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.red.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.error_outline,
+              size: 64,
+              color: Colors.red,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Error loading appointments',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: darkGrey,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () {
+              log('Retry button pressed');
+              setState(() {});
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: primaryTeal,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text('Retry'),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Animal: ${appointment.animalName}',
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: Colors.black87,
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        SizedBox(height: MediaQuery.of(context).size.height * 0.15),
+        Center(
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(32),
+                decoration: BoxDecoration(
+                  color: primaryTeal.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.event_available_rounded,
+                  size: 80,
+                  color: primaryTeal,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'No Pending Requests',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: darkGrey,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'New appointment requests will appear here',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 15,
+                  color: Colors.grey[600],
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildModernAppointmentCard(AppointmentModel appointment, int index) {
+    log(
+      'Building appointment item for: ${appointment.animalName}, id: ${appointment.id}',
+    );
+    return TweenAnimationBuilder<double>(
+      duration: Duration(milliseconds: 300 + (index * 50)),
+      tween: Tween(begin: 0.0, end: 1.0),
+      builder: (context, value, child) {
+        return Transform.translate(
+          offset: Offset(0, 20 * (1 - value)),
+          child: Opacity(
+            opacity: value,
+            child: child,
+          ),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: primaryTeal.withOpacity(0.15),
+            width: 1.5,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: primaryTeal.withOpacity(0.15),
+              blurRadius: 15,
+              offset: const Offset(0, 5),
             ),
-          ),
-          Text(
-            'Date: ${_formatDate(appointment.date)} at ${appointment.time}',
-            style: const TextStyle(fontSize: 14, color: Colors.black87),
-          ),
-          Text(
-            'Problem: ${appointment.problem}',
-            style: const TextStyle(fontSize: 14, color: Colors.black87),
-          ),
-          const SizedBox(height: 12),
-          Center(
-            child: ElevatedButton(
-              onPressed: () async {
-                log(
-                  'View Details pressed for appointment id: ${appointment.id}',
-                );
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        AppointmentApprovalPage(appointment: appointment),
+            BoxShadow(
+              color: Colors.black.withOpacity(0.03),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [primaryTeal, lightTeal],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(14),
+                          boxShadow: [
+                            BoxShadow(
+                              color: primaryTeal.withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.pets_rounded,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              appointment.animalName,
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: darkGrey,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.access_time_rounded,
+                                  size: 14,
+                                  color: Colors.grey[500],
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _formatDate(appointment.date),
+                                  style: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Colors.orange.shade400, Colors.orange.shade600],
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Text(
+                          'Pending',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                );
-                // Force refresh after returning
-                if (mounted) {
-                  log('Returned from appointment details, refreshing');
-                  setState(() {});
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  vertical: 10,
-                  horizontal: 30,
-                ),
-              ),
-              child: const Text(
-                'View Details',
-                style: TextStyle(color: Color(0xFF00796B)),
+                  const SizedBox(height: 16),
+                  const Divider(height: 1),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.schedule_rounded,
+                        size: 18,
+                        color: primaryTeal,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Time',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              appointment.time,
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: darkGrey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.medical_information_rounded,
+                        size: 18,
+                        color: primaryTeal,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Problem',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              appointment.problem,
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: darkGrey,
+                                height: 1.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-          ),
-        ],
+            Container(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [primaryTeal, lightTeal],
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: primaryTeal.withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () async {
+                      log(
+                        'View Details pressed for appointment id: ${appointment.id}',
+                      );
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              AppointmentApprovalPage(appointment: appointment),
+                        ),
+                      );
+                      // Force refresh after returning
+                      if (mounted) {
+                        log('Returned from appointment details, refreshing');
+                        setState(() {});
+                      }
+                    },
+                    child: Container(
+                      height: 50,
+                      alignment: Alignment.center,
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.visibility_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'View Details',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
