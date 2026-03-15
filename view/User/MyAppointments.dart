@@ -494,7 +494,7 @@ class _MyAppointmentsPageState extends State<MyAppointmentsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  languageProvider.t("Reason for visit", "ملاقات کی وجہ") + ":",
+                  "${languageProvider.t("Reason for visit", "ملاقات کی وجہ")}:",
                   style: const TextStyle(
                     color: Colors.grey,
                     fontSize: 12,

@@ -533,7 +533,7 @@ class _DoctorDashboardPageState extends State<DoctorDashboardPage> {
           const SizedBox(height: 20),
           ...appointments
               .map((appointment) => _buildAppointmentItem(appointment))
-              .toList(),
+              ,
         ],
       ),
     );

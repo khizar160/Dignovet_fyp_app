@@ -458,7 +458,7 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
                           ],
                         ),
                       );
-                    }).toList(),
+                    }),
                     const SizedBox(height: 12),
                   ],
                   if (hasPrescriptions) ...[
@@ -519,7 +519,7 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
                           ],
                         ),
                       );
-                    }).toList(),
+                    }),
                   ],
                 ],
               ),

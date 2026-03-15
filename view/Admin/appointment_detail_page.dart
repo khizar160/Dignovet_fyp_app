@@ -1,7 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter_application_1/model/app_user.dart';
-import 'package:flutter_application_1/model/appointment_model.dart';
 import 'package:flutter_application_1/view/Admin/edit_profile_page.dart';
 import 'package:flutter_application_1/view/Admin/manage_appointments.dart';
 import 'package:flutter_application_1/view/Admin/manage_doctor.dart';
@@ -19,7 +16,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
   // Professional Color Palette
   static const Color primaryTeal = Color(0xFF00796B);
   static const Color lightTeal = Color(0xFF4DB6AC);
-  static const Color cardGrey = Color(0xFFF8F9FA);
   static const Color itemTeal = Color(0xFFB2DFDB);
   static const Color darkGrey = Color(0xFF2C3E50);
   static const Color lightGrey = Color(0xFF95A5A6);

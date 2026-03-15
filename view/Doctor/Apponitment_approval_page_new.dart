@@ -5,6 +5,7 @@ import 'package:flutter_application_1/model/app_user.dart';
 import 'package:flutter_application_1/services/Appointment Service/appointment_services.dart';
 import 'package:flutter_application_1/services/firebase_authentication/auth_api.dart';
 import 'package:flutter_application_1/services/notification service/notification_service.dart';
+import 'package:flutter_application_1/services/payment_service/supabase_payment_storage.dart';
 import 'package:flutter_application_1/view/Doctor/UserProfilePage.dart';
 import 'package:flutter_application_1/view/User/ChatScreen.dart';
 
@@ -22,6 +23,7 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
     with SingleTickerProviderStateMixin {
   final AppointmentService _appointmentService = AppointmentService();
   final NotificationService _notificationService = NotificationService();
+  final SupabasePaymentStorage _paymentStorage = SupabasePaymentStorage();
 
   final Color primaryTeal = Color(0xFF00796B);
   final Color lightTeal = Color(0xFF4DB6AC);
@@ -33,6 +35,7 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
   AppUser? doctor;
   Map<String, dynamic>? animalData;
   bool isLoading = true;
+  String? paymentImageUrl; // Signed URL for payment screenshot
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -63,6 +66,10 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
 
   Future<void> _fetchData() async {
     try {
+      print('[AppointmentApproval] Loading appointment data...');
+      print('[AppointmentApproval] Payment Screenshot URL: ${widget.appointment.paymentScreenshotUrl}');
+      
+      // Load user data
       final userDoc = await FirebaseFirestore.instance
           .collection('users')
           .doc(widget.appointment.userId)
@@ -71,6 +78,7 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
         user = AppUser.fromMap(userDoc.data()!, userDoc.id);
       }
 
+      // Load doctor data
       final currentDoctorId = AuthService.currentUser?.uid;
       if (currentDoctorId != null) {
         final doctorDoc = await FirebaseFirestore.instance
@@ -82,6 +90,7 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
         }
       }
 
+      // Load animal data
       final animalSnapshot = await FirebaseFirestore.instance
           .collection('animals')
           .where('userId', isEqualTo: widget.appointment.userId)
@@ -92,9 +101,23 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
         animalData = animalSnapshot.docs.first.data();
       }
 
+      // Load signed URL for payment screenshot
+      if (widget.appointment.paymentScreenshotUrl != null && 
+          widget.appointment.paymentScreenshotUrl!.isNotEmpty) {
+        print('[AppointmentApproval] Loading signed URL for payment screenshot...');
+        paymentImageUrl = await _paymentStorage.getSignedUrlForImage(
+          widget.appointment.paymentScreenshotUrl!
+        );
+        print('[AppointmentApproval] Signed URL loaded: $paymentImageUrl');
+      } else {
+        print('[AppointmentApproval] No payment screenshot URL available');
+      }
+
+      print('[AppointmentApproval] Data loaded successfully');
       setState(() => isLoading = false);
       _animationController.forward();
     } catch (e) {
+      print('[AppointmentApproval] Error loading data: $e');
       setState(() => isLoading = false);
       if (mounted) {
         _showSnackBar('Some data could not be loaded', isError: true);
@@ -152,43 +175,329 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
   }
 
   Future<void> _declineAppointment() async {
-    final confirmed = await _showConfirmDialog(
-      'Decline Appointment?',
-      'Are you sure you want to decline this appointment request?',
+    // Step 1: Show decline reason selection
+    final declineReason = await showDialog<String>(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.cancel_outlined, color: Colors.red[700], size: 30),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Decline Appointment',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Select reason for declining:',
+                style: TextStyle(fontSize: 15, color: Colors.grey),
+              ),
+              const SizedBox(height: 20),
+              _buildDeclineOption(
+                context: context,
+                icon: Icons.report_problem_outlined,
+                iconColor: Colors.red,
+                title: 'Fake/Invalid Payment Screenshot',
+                badge: 'No Refund',
+                badgeColor: Colors.red,
+                onTap: () => Navigator.pop(context, 'fake_screenshot'),
+              ),
+              const SizedBox(height: 12),
+              _buildDeclineOption(
+                context: context,
+                icon: Icons.access_time_outlined,
+                iconColor: Colors.orange,
+                title: 'Schedule Conflict / No Time',
+                badge: 'Full Refund',
+                badgeColor: Colors.green,
+                onTap: () => Navigator.pop(context, 'no_time'),
+              ),
+              const SizedBox(height: 12),
+              _buildDeclineOption(
+                context: context,
+                icon: Icons.info_outline,
+                iconColor: Colors.blue,
+                title: 'Other Reason',
+                badge: 'Full Refund',
+                badgeColor: Colors.green,
+                onTap: () => Navigator.pop(context, 'other'),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel', style: TextStyle(fontSize: 16)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
 
+    if (declineReason == null) return;
+
+    // Step 2: Confirm with refund info
+    final confirmed = await _showDeclineConfirmDialog(declineReason);
     if (!confirmed) return;
 
+    // Step 3: Process decline
     try {
-      _showLoadingDialog('Declining appointment...');
+      _showLoadingDialog('Processing decline...');
+
+      final bool needsRefund = declineReason != 'fake_screenshot';
+      final String reasonText = _getDeclineMessage(declineReason);
 
       await _appointmentService.updateStatus(widget.appointment.id, 'declined');
 
-      final dateTime = widget.appointment.date.toDate();
-      final formattedDate =
-          "${_getDayName(dateTime.weekday)}, ${_getMonthName(dateTime.month)} ${dateTime.day}";
-      final appointmentTimeStr =
-          "$formattedDate at ${widget.appointment.time}";
+      // Store decline details
+      await FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(widget.appointment.id)
+          .update({
+        'declineReason': declineReason,
+        'declineReasonText': reasonText,
+        'declinedAt': Timestamp.now(),
+        'refundRequired': needsRefund,
+      });
 
-      await _notificationService.sendNotification(
-        receiverId: widget.appointment.userId,
-        title: '❌ Appointment Declined',
-        message:
-            'Dr. ${doctor?.name ?? "Your doctor"} has declined your appointment for ${animalData?['name'] ?? widget.appointment.animalName} scheduled on $appointmentTimeStr.',
-        appointmentId: widget.appointment.id,
-        type: 'appointment_declined',
-      );
+      if (needsRefund && widget.appointment.paymentAmount > 0) {
+        // Create refund record
+        await FirebaseFirestore.instance.collection('refunds').add({
+          'appointmentId': widget.appointment.id,
+          'userId': widget.appointment.userId,
+          'doctorId': widget.appointment.doctorId,
+          'amount': widget.appointment.paymentAmount,
+          'paymentMethod': 'manual', // JazzCash/EasyPaisa
+          'status': 'pending',
+          'reason': declineReason,
+          'reasonText': reasonText,
+          'createdAt': Timestamp.now(),
+          'processedAt': null,
+        });
 
-      Navigator.pop(context); // Close loading dialog
+        print('[Decline] ✅ Refund record created for Rs. ${widget.appointment.paymentAmount}');
+
+        // Notify admin
+        await _notifyAdminForRefund(reasonText);
+
+        // Notify user about refund
+        await _notificationService.sendNotification(
+          receiverId: widget.appointment.userId,
+          title: '💰 Refund Initiated',
+          message:
+              'Your appointment has been declined. Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} refund is being processed (24-48 hours).',
+          appointmentId: widget.appointment.id,
+          type: 'refund_initiated',
+        );
+      } else {
+        await _notificationService.sendNotification(
+          receiverId: widget.appointment.userId,
+          title: '❌ Appointment Declined',
+          message: 'Appointment declined. Reason: $reasonText. No refund due to invalid payment.',
+          appointmentId: widget.appointment.id,
+          type: 'appointment_declined',
+        );
+      }
+
+      Navigator.pop(context); // Close loading
       Navigator.pop(context); // Go back
       if (mounted) {
-        _showSnackBar('Appointment declined');
+        _showSnackBar(
+          needsRefund ? 'Declined. Refund will be processed.' : 'Declined. No refund issued.',
+        );
       }
     } catch (e) {
-      Navigator.pop(context); // Close loading dialog
+      Navigator.pop(context);
       if (mounted) {
         _showSnackBar('Error declining appointment', isError: true);
       }
+    }
+  }
+
+  Widget _buildDeclineOption({
+    required BuildContext context,
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String badge,
+    required Color badgeColor,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.grey[50],
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: iconColor.withOpacity(0.3), width: 1.5),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: iconColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: iconColor, size: 24),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: badgeColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: badgeColor, width: 1.5),
+                ),
+                child: Text(
+                  badge,
+                  style: TextStyle(
+                    color: badgeColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<bool> _showDeclineConfirmDialog(String reason) async {
+    final bool needsRefund = reason != 'fake_screenshot';
+    final String reasonText = _getDeclineMessage(reason);
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Confirm Decline'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Reason: $reasonText', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            if (needsRefund)
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.green),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} will be refunded.',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.red),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.block, color: Colors.red, size: 20),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'No refund - Invalid payment proof.',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
+  String _getDeclineMessage(String reason) {
+    switch (reason) {
+      case 'fake_screenshot':
+        return 'Invalid/fake payment screenshot';
+      case 'no_time':
+        return 'Schedule conflict';
+      case 'other':
+        return 'Personal reasons';
+      default:
+        return 'Declined';
+    }
+  }
+
+  Future<void> _notifyAdminForRefund(String reason) async {
+    try {
+      final adminSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: 'Admin')
+          .get();
+
+      for (var admin in adminSnapshot.docs) {
+        await _notificationService.sendNotification(
+          receiverId: admin.id,
+          title: '💰 Manual Refund Required',
+          message:
+              'Process refund of Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} for appointment ${widget.appointment.id}. Reason: $reason',
+          appointmentId: widget.appointment.id,
+          type: 'admin_refund_request',
+        );
+      }
+    } catch (e) {
+      print('[Refund] Error notifying admin: $e');
     }
   }
 
@@ -317,6 +626,9 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
                           const SizedBox(height: 24),
                           _sectionLabel("Appointment Details", Icons.event_note_rounded),
                           _buildModernAppointmentDetails(),
+                          const SizedBox(height: 24),
+                          _sectionLabel("Payment Information", Icons.payment_rounded),
+                          _buildPaymentScreenshotSection(),
                           const SizedBox(height: 32),
                           _buildActionButtons(),
                           const SizedBox(height: 24),
@@ -528,10 +840,8 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
               radius: 32,
               backgroundColor: primaryTeal.withOpacity(0.1),
               backgroundImage:
-                  user!.imageUrl != null ? NetworkImage(user!.imageUrl!) : null,
-              child: user!.imageUrl == null
-                  ? Icon(Icons.person, color: primaryTeal, size: 32)
-                  : null,
+                  NetworkImage(user!.imageUrl!),
+              child: null,
             ),
           ),
           const SizedBox(width: 16),
@@ -888,6 +1198,357 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
         child: Text(
           message,
           style: TextStyle(color: Colors.grey[600]),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPaymentScreenshotSection() {
+    // Check if we have a valid payment screenshot URL
+    final hasValidUrl = paymentImageUrl != null && paymentImageUrl!.isNotEmpty;
+    
+    print('[PaymentSection] Has Valid URL: $hasValidUrl');
+    if (hasValidUrl) {
+      print('[PaymentSection] Display URL: $paymentImageUrl');
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [primaryTeal.withOpacity(0.15), lightTeal.withOpacity(0.15)],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.receipt_long_rounded, color: primaryTeal, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Payment Screenshot',
+                      style: TextStyle(
+                        color: Colors.grey[600],
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF2C3E50),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (hasValidUrl)
+            Column(
+              children: [
+                const Divider(height: 1),
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: () => _showFullScreenImage(paymentImageUrl!),
+                  child: Container(
+                    height: 250,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: primaryTeal.withOpacity(0.3), width: 2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: primaryTeal.withOpacity(0.1),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.network(
+                            paymentImageUrl!,
+                            fit: BoxFit.cover,
+                            headers: const {
+                              'Cache-Control': 'no-cache',
+                            },
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) {
+                                print('[PaymentScreenshot] ✅ Image loaded successfully');
+                                return child;
+                              }
+                              final progress = loadingProgress.expectedTotalBytes != null
+                                  ? (loadingProgress.cumulativeBytesLoaded /
+                                      loadingProgress.expectedTotalBytes! * 100).toStringAsFixed(0)
+                                  : 'Loading';
+                              print('[PaymentScreenshot] Loading: $progress%');
+                              return Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    CircularProgressIndicator(
+                                      value: loadingProgress.expectedTotalBytes != null
+                                          ? loadingProgress.cumulativeBytesLoaded /
+                                              loadingProgress.expectedTotalBytes!
+                                          : null,
+                                      color: primaryTeal,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      'Loading image... $progress%',
+                                      style: TextStyle(
+                                        color: Colors.grey[600],
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                            errorBuilder: (context, error, stackTrace) {
+                              print('[PaymentScreenshot] ❌ ERROR: $error');
+                              print('[PaymentScreenshot] URL: $paymentImageUrl');
+                              print('[PaymentScreenshot] StackTrace: $stackTrace');
+                              
+                              return Container(
+                                color: Colors.red.shade50,
+                                child: Center(
+                                  child: SingleChildScrollView(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.error_outline, 
+                                          size: 60, 
+                                          color: Colors.red[400]
+                                        ),
+                                        const SizedBox(height: 16),
+                                        Text(
+                                          'Failed to Load Image',
+                                          style: TextStyle(
+                                            color: Colors.red[700],
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Text(
+                                          error.toString(),
+                                          style: TextStyle(
+                                            color: Colors.grey[700],
+                                            fontSize: 11,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                          maxLines: 3,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 12),
+                                        ElevatedButton.icon(
+                                          onPressed: () {
+                                            setState(() {
+                                              isLoading = true;
+                                            });
+                                            _fetchData();
+                                          },
+                                          icon: const Icon(Icons.refresh, size: 18),
+                                          label: const Text('Retry'),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: primaryTeal,
+                                            foregroundColor: Colors.white,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          Positioned(
+                            bottom: 10,
+                            right: 10,
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.6),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.zoom_in, color: Colors.white, size: 18),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Tap to view',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.orange.withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.orange[700], size: 28),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'No Payment Screenshot',
+                          style: TextStyle(
+                            color: Colors.orange[900],
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'The user has not uploaded a payment screenshot yet.',
+                          style: TextStyle(
+                            color: Colors.orange[800],
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showFullScreenImage(String imageUrl) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(10),
+        child: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 4.0,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.contain,
+                  headers: const {
+                    'Cache-Control': 'no-cache',
+                  },
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Center(
+                      child: CircularProgressIndicator(
+                        value: loadingProgress.expectedTotalBytes != null
+                            ? loadingProgress.cumulativeBytesLoaded /
+                                loadingProgress.expectedTotalBytes!
+                            : null,
+                        color: Colors.white,
+                      ),
+                    );
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    print('[FullScreenImage] Error: $error');
+                    print('[FullScreenImage] URL: $imageUrl');
+                    return Container(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.error_outline, 
+                            size: 60, 
+                            color: Colors.white
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Failed to load image',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Check internet connection',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            Positioned(
+              top: 20,
+              right: 20,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

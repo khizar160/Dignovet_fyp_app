@@ -319,7 +319,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_application_1/provider/language_provider.dart';
-import '../../../services/firebase_authentication/auth_api.dart';
 
 
 class EditProfilePage extends StatefulWidget {

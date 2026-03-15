@@ -325,7 +325,7 @@ class _RegisterAnimalPageState extends State<RegisterAnimalPage> {
 
   Future<void> _pickImages() async {
     final files = await _picker.pickMultiImage();
-    if (files != null && files.isNotEmpty) {
+    if (files.isNotEmpty) {
       setState(() {
         _images = files.map((e) => File(e.path)).toList();
       });
@@ -685,7 +685,7 @@ class _RegisterAnimalPageState extends State<RegisterAnimalPage> {
 
   Widget _buildGenderDropdown(LanguageProvider languageProvider) {
     return DropdownButtonFormField<String>(
-      value: _gender,
+      initialValue: _gender,
       style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Color(0xFF2C3E50)),
       decoration: InputDecoration(
         prefixIcon: Container(

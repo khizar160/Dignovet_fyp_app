@@ -242,6 +242,7 @@ import 'package:flutter_application_1/view/User/Profile.dart';
 import 'package:flutter_application_1/view/User/RegisterAnimal.dart';
 import 'package:flutter_application_1/view/User/AnimalHistory.dart';
 import 'package:flutter_application_1/view/User/MyAppointments.dart';
+import 'package:flutter_application_1/view/User/customer_support_chat.dart';
 import 'package:flutter_application_1/view/User/UserSettingsPage.dart';
 import 'package:flutter_application_1/view/chat_screen/chat_screen.dart';
 
@@ -289,6 +290,12 @@ class _UserDashboardPageState extends State<UserDashboardPage>
       'icon': Icons.history,
       'gradient': [Color(0xFF00796B), Color(0xFF4DB6AC)],
     },
+    {
+      'title': 'Customer Support',
+      'subtitle': 'Chat with admin for help',
+      'icon': Icons.support_agent,
+      'gradient': [Color(0xFF00796B), Color(0xFF4DB6AC)],
+    },
   ];
 
   @override
@@ -324,6 +331,7 @@ class _UserDashboardPageState extends State<UserDashboardPage>
       () => AppointmentDashboardPage(),
       () => MyAppointmentsPage(),
       () => AnimalHistoryPage(),
+      () => const CustomerSupportChatPage(),
     ];
 
     if (index < routes.length) {
@@ -368,6 +376,12 @@ class _UserDashboardPageState extends State<UserDashboardPage>
             'title': languageProvider.translate('view_history'),
             'subtitle': languageProvider.translate('view_history_subtitle'),
             'icon': Icons.history,
+            'gradient': [Color(0xFF00796B), Color(0xFF4DB6AC)],
+          },
+          {
+            'title': 'Customer Support',
+            'subtitle': 'Chat with admin for help',
+            'icon': Icons.support_agent,
             'gradient': [Color(0xFF00796B), Color(0xFF4DB6AC)],
           },
         ];

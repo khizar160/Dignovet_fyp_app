@@ -550,6 +550,127 @@ class _NotificationsPageState extends State<NotificationsPage> {
                               height: 1.4,
                             ),
                           ),
+                          // Show refund screenshot if exists
+                          if (data['screenshotUrl'] != null && 
+                              data['screenshotUrl'].toString().isNotEmpty &&
+                              data['type'] == 'refund_completed') ...[
+                            const SizedBox(height: 12),
+                            GestureDetector(
+                              onTap: () => _showFullScreenImage(context, data['screenshotUrl']),
+                              child: Container(
+                                height: 200,
+                                width: double.infinity,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: Colors.green.withOpacity(0.3),
+                                    width: 2,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.green.withOpacity(0.1),
+                                      blurRadius: 8,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: Image.network(
+                                        data['screenshotUrl'],
+                                        fit: BoxFit.cover,
+                                        loadingBuilder: (context, child, loadingProgress) {
+                                          if (loadingProgress == null) return child;
+                                          return Center(
+                                            child: CircularProgressIndicator(
+                                              value: loadingProgress.expectedTotalBytes != null
+                                                  ? loadingProgress.cumulativeBytesLoaded /
+                                                      loadingProgress.expectedTotalBytes!
+                                                  : null,
+                                              color: Colors.green,
+                                            ),
+                                          );
+                                        },
+                                        errorBuilder: (context, error, stackTrace) {
+                                          return Container(
+                                            color: Colors.grey[200],
+                                            child: const Column(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                Icon(Icons.broken_image, size: 50, color: Colors.grey),
+                                                SizedBox(height: 8),
+                                                Text(
+                                                  'Failed to load receipt',
+                                                  style: TextStyle(color: Colors.grey),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    Positioned(
+                                      top: 8,
+                                      left: 8,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.green.withOpacity(0.9),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.receipt, color: Colors.white, size: 16),
+                                            SizedBox(width: 4),
+                                            Text(
+                                              'Payment Proof',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      bottom: 8,
+                                      right: 8,
+                                      child: Container(
+                                        padding: const EdgeInsets.all(8),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withOpacity(0.6),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.zoom_in, color: Colors.white, size: 16),
+                                            SizedBox(width: 4),
+                                            Text(
+                                              'Tap to view',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -598,6 +719,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
         return 'APPROVED';
       case 'appointment_declined':
         return 'DECLINED';
+      case 'refund_completed':
+        return 'REFUND';
+      case 'refund_initiated':
+        return 'REFUND PROCESSING';
       case 'chat':
         return 'MESSAGE';
       default:
@@ -608,6 +733,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   IconData _getIconData(String type) {
     if (type == 'appointment_approved') return Icons.verified_user_rounded;
     if (type == 'appointment_declined') return Icons.event_busy_rounded;
+    if (type == 'refund_completed') return Icons.monetization_on_rounded;
+    if (type == 'refund_initiated') return Icons.pending_actions_rounded;
     if (type == 'chat') return Icons.forum_rounded;
     return Icons.notifications_active_rounded;
   }
@@ -615,6 +742,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   Color _getIconColor(String type) {
     if (type == 'appointment_approved') return Colors.green.shade600;
     if (type == 'appointment_declined') return Colors.red.shade600;
+    if (type == 'refund_completed') return Colors.green.shade700;
+    if (type == 'refund_initiated') return Colors.orange.shade600;
     if (type == 'chat') return Colors.blue.shade600;
     return darkTeal;
   }
@@ -689,5 +818,100 @@ class _NotificationsPageState extends State<NotificationsPage> {
     if (diff.inMinutes < 60) return '${diff.inMinutes}m';
     if (diff.inHours < 24) return '${diff.inHours}h';
     return '${diff.inDays}d';
+  }
+
+  /// Show full-screen refund screenshot viewer
+  void _showFullScreenImage(BuildContext context, String imageUrl) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(10),
+        child: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 4.0,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.contain,
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Center(
+                      child: CircularProgressIndicator(
+                        value: loadingProgress.expectedTotalBytes != null
+                            ? loadingProgress.cumulativeBytesLoaded /
+                                loadingProgress.expectedTotalBytes!
+                            : null,
+                        color: Colors.white,
+                      ),
+                    );
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      padding: const EdgeInsets.all(20),
+                      child: const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.error_outline, size: 60, color: Colors.white),
+                          SizedBox(height: 16),
+                          Text(
+                            'Failed to load refund proof',
+                            style: TextStyle(color: Colors.white, fontSize: 16),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            Positioned(
+              top: 20,
+              left: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.9),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.receipt_long, color: Colors.white, size: 20),
+                    SizedBox(width: 8),
+                    Text(
+                      'Refund Payment Proof',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Positioned(
+              top: 20,
+              right: 20,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

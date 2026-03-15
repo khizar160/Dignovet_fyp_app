@@ -23,8 +23,8 @@ class _DiseasePredictionPageState extends State<DiseasePredictionPage> {
   String? _selectedAnimalId;
   List<File> _selectedImages = []; // Multiple images
   List<String> _selectedImageUrls = []; // Track selected URLs
-  Map<String, File> _downloadedImages = {}; // Cache downloaded images by URL
-  Set<String> _downloadingImages =
+  final Map<String, File> _downloadedImages = {}; // Cache downloaded images by URL
+  final Set<String> _downloadingImages =
       {}; // Track which images are currently downloading
 
   @override
@@ -429,7 +429,7 @@ class _DiseasePredictionPageState extends State<DiseasePredictionPage> {
 
       var request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://10.75.27.97:8000/predict'),
+        Uri.parse('http://192.168.137.196:8000/predict'),
       );
 
       // Add all image files
@@ -1090,7 +1090,7 @@ class _DiseasePredictionPageState extends State<DiseasePredictionPage> {
       ),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
       child: DropdownButtonFormField<String>(
-        value: _selectedAnimalId,
+        initialValue: _selectedAnimalId,
         hint: Text(languageProvider.translate('select_animal')),
         decoration: const InputDecoration(
           border: InputBorder.none,

@@ -71,8 +71,8 @@ class _UserProfilePageState extends State<UserProfilePage> {
           children: [
             CircleAvatar(
               radius: 50,
-              backgroundImage: user!.imageUrl != null ? NetworkImage(user!.imageUrl!) : null,
-              child: user!.imageUrl == null ? Icon(Icons.person, size: 50, color: primaryTeal) : null,
+              backgroundImage: NetworkImage(user!.imageUrl!),
+              child: null,
             ),
             const SizedBox(height: 20),
             Text(user!.name, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),

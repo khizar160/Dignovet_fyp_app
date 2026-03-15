@@ -2,6 +2,7 @@ import 'dart:developer';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:flutter_application_1/services/payment_service/supabase_payment_storage.dart';
 
 class AppointmentModel {
   final String id;
@@ -13,6 +14,14 @@ class AppointmentModel {
   final String problem;
   final String status;
   final DateTime? createdAt;
+  final String consultationType; // 'online' or 'home_visit'
+  final double paymentAmount;
+  final String? paymentScreenshotUrl;
+  final String? paymentStatus;
+  final String? declineReason; // Reason code for decline
+  final String? declineReasonText; // Human-readable reason
+  final bool? refundRequired; // Whether refund is needed
+  final Timestamp? declinedAt; // When was it declined
 
   // User and Doctor details (fetched separately)
   String? userName;
@@ -30,6 +39,14 @@ class AppointmentModel {
     required this.problem,
     required this.status,
     this.createdAt,
+    this.consultationType = 'online',
+    this.paymentAmount = 0.0,
+    this.paymentScreenshotUrl,
+    this.paymentStatus = 'pending',
+    this.declineReason,
+    this.declineReasonText,
+    this.refundRequired,
+    this.declinedAt,
     this.userName,
     this.doctorName,
     this.userImage,
@@ -46,6 +63,14 @@ class AppointmentModel {
       time: map['time'] ?? '',
       problem: map['problem'] ?? '',
       status: map['status'] ?? 'pending',
+      consultationType: map['consultationType'] ?? 'online',
+      paymentAmount: (map['paymentAmount'] ?? 0.0).toDouble(),
+      paymentScreenshotUrl: map['paymentScreenshotUrl'],
+      paymentStatus: map['paymentStatus'] ?? 'pending',
+      declineReason: map['declineReason'],
+      declineReasonText: map['declineReasonText'],
+      refundRequired: map['refundRequired'],
+      declinedAt: map['declinedAt'],
       createdAt: map['createdAt'] != null 
           ? (map['createdAt'] as Timestamp).toDate() 
           : null,
@@ -67,12 +92,14 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
 
   final _firestore = FirebaseFirestore.instance;
   final _searchController = TextEditingController();
+  final _paymentStorage = SupabasePaymentStorage();
   
   String _searchQuery = '';
   String _filterStatus = 'all'; // all, pending, approved, declined
   bool _loading = true;
   List<AppointmentModel> _allAppointments = [];
   List<AppointmentModel> _filteredAppointments = [];
+  Map<String, String> _signedUrls = {}; // Cache for signed URLs
 
   @override
   void initState() {
@@ -203,6 +230,14 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
             problem: appointment.problem,
             status: newStatus,
             createdAt: appointment.createdAt,
+            consultationType: appointment.consultationType,
+            paymentAmount: appointment.paymentAmount,
+            paymentScreenshotUrl: appointment.paymentScreenshotUrl,
+            paymentStatus: appointment.paymentStatus,
+            declineReason: appointment.declineReason,
+            declineReasonText: appointment.declineReasonText,
+            refundRequired: appointment.refundRequired,
+            declinedAt: appointment.declinedAt,
             userName: appointment.userName,
             doctorName: appointment.doctorName,
             userImage: appointment.userImage,
@@ -219,13 +254,34 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
     }
   }
 
-  void _showAppointmentDetails(AppointmentModel appointment) {
+  void _showAppointmentDetails(AppointmentModel appointment) async {
+    // Load signed URL if payment screenshot exists
+    String? signedUrl;
+    if (appointment.paymentScreenshotUrl != null && 
+        appointment.paymentScreenshotUrl!.isNotEmpty) {
+      // Check cache first
+      if (_signedUrls.containsKey(appointment.id)) {
+        signedUrl = _signedUrls[appointment.id];
+        print('[Admin] Using cached signed URL for appointment ${appointment.id}');
+      } else {
+        print('[Admin] Loading signed URL for payment screenshot...');
+        signedUrl = await _paymentStorage.getSignedUrlForImage(
+          appointment.paymentScreenshotUrl!
+        );
+        _signedUrls[appointment.id] = signedUrl ?? '';
+        print('[Admin] Signed URL loaded: $signedUrl');
+      }
+    }
+    
+    if (!mounted) return;
+    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _AppointmentDetailsSheet(
         appointment: appointment,
+        signedImageUrl: signedUrl,
         onStatusUpdate: (status) => _updateAppointmentStatus(appointment, status),
       ),
     );
@@ -602,6 +658,73 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
+                
+                // Show decline information if declined
+                if (appointment.status == 'declined' && appointment.declineReasonText != null) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.shade200, width: 1.5),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.info_outline, size: 16, color: Colors.red.shade700),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Decline Reason:',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.red.shade900,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          appointment.declineReasonText!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.red.shade800,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Icon(
+                              appointment.refundRequired == true 
+                                  ? Icons.monetization_on 
+                                  : Icons.money_off,
+                              size: 14,
+                              color: appointment.refundRequired == true 
+                                  ? Colors.green.shade700 
+                                  : Colors.red.shade700,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              appointment.refundRequired == true
+                                  ? 'Refund Required'
+                                  : 'No Refund',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: appointment.refundRequired == true 
+                                    ? Colors.green.shade700 
+                                    : Colors.red.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -642,10 +765,12 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
 
 class _AppointmentDetailsSheet extends StatelessWidget {
   final AppointmentModel appointment;
+  final String? signedImageUrl; // Signed URL for payment screenshot
   final Function(String) onStatusUpdate;
 
   const _AppointmentDetailsSheet({
     required this.appointment,
+    this.signedImageUrl,
     required this.onStatusUpdate,
   });
 
@@ -697,6 +822,281 @@ class _AppointmentDetailsSheet extends StatelessWidget {
             _DetailRow(icon: Icons.description, label: 'Problem', value: appointment.problem),
             const SizedBox(height: 16),
             _DetailRow(icon: Icons.info, label: 'Status', value: appointment.status.toUpperCase()),
+            const SizedBox(height: 16),
+            _DetailRow(
+              icon: Icons.attach_money, 
+              label: 'Payment Amount', 
+              value: 'Rs. ${appointment.paymentAmount.toStringAsFixed(0)}'
+            ),
+            const SizedBox(height: 16),
+            _DetailRow(
+              icon: Icons.payment, 
+              label: 'Consultation Type', 
+              value: appointment.consultationType == 'online' ? 'Online Consultation' : 'Home Visit'
+            ),
+            
+            // Show decline information if appointment is declined
+            if (appointment.status == 'declined') ...[
+              const SizedBox(height: 20),
+              const Divider(thickness: 2),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red.shade200, width: 2),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.cancel_outlined, color: Colors.red.shade700, size: 28),
+                        const SizedBox(width: 12),
+                        const Text(
+                          'Appointment Declined',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF2C3E50),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    _DetailRow(
+                      icon: Icons.report_problem,
+                      label: 'Decline Reason',
+                      value: appointment.declineReasonText ?? 'Not specified',
+                    ),
+                    const SizedBox(height: 12),
+                    _DetailRow(
+                      icon: Icons.access_time,
+                      label: 'Declined At',
+                      value: appointment.declinedAt != null
+                          ? DateFormat('MMM dd, yyyy - hh:mm a').format(appointment.declinedAt!.toDate())
+                          : 'N/A',
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Icon(
+                          appointment.refundRequired == true 
+                              ? Icons.monetization_on 
+                              : Icons.money_off,
+                          size: 20,
+                          color: appointment.refundRequired == true 
+                              ? Colors.green.shade700 
+                              : Colors.red.shade700,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Refund Status: ',
+                          style: TextStyle(
+                            color: Colors.grey[700],
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: appointment.refundRequired == true
+                                  ? Colors.green.shade100
+                                  : Colors.red.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: appointment.refundRequired == true
+                                    ? Colors.green.shade700
+                                    : Colors.red.shade700,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: Text(
+                              appointment.refundRequired == true
+                                  ? '✓ FULL REFUND REQUIRED'
+                                  : '✗ NO REFUND',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: appointment.refundRequired == true
+                                    ? Colors.green.shade900
+                                    : Colors.red.shade900,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (appointment.refundRequired == true) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.info_outline, color: Colors.orange.shade700, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Admin needs to process refund of Rs. ${appointment.paymentAmount.toStringAsFixed(0)} manually via JazzCash/EasyPaisa.',
+                                style: TextStyle(
+                                  color: Colors.orange.shade900,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+            
+            if (signedImageUrl != null && signedImageUrl!.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              const Divider(),
+              const SizedBox(height: 20),
+              const Text(
+                'Payment Screenshot',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF2C3E50),
+                ),
+              ),
+              const SizedBox(height: 12),
+              GestureDetector(
+                onTap: () => _showFullScreenImage(context, signedImageUrl!),
+                child: Container(
+                  height: 250,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF00796B).withOpacity(0.3), width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF00796B).withOpacity(0.1),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.network(
+                          signedImageUrl!,
+                          fit: BoxFit.cover,
+                          headers: const {
+                            'Cache-Control': 'no-cache',
+                          },
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) {
+                              print('[Admin-Screenshot] ✅ Image loaded successfully');
+                              return child;
+                            }
+                            final progress = loadingProgress.expectedTotalBytes != null
+                                ? (loadingProgress.cumulativeBytesLoaded /
+                                    loadingProgress.expectedTotalBytes! * 100).toStringAsFixed(0)
+                                : 'Loading';
+                            print('[Admin-Screenshot] Loading: $progress%');
+                            return Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  CircularProgressIndicator(
+                                    value: loadingProgress.expectedTotalBytes != null
+                                        ? loadingProgress.cumulativeBytesLoaded /
+                                            loadingProgress.expectedTotalBytes!
+                                        : null,
+                                    color: const Color(0xFF00796B),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Loading... $progress%',
+                                    style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) {
+                            print('[Admin-Screenshot] ❌ ERROR: $error');
+                            print('[Admin-Screenshot] URL: $signedImageUrl');
+                            return Container(
+                              color: Colors.red.shade50,
+                              child: Center(
+                                child: SingleChildScrollView(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.error_outline, size: 50, color: Colors.red[400]),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Failed to Load Image',
+                                        style: TextStyle(color: Colors.red[700], fontWeight: FontWeight.bold, fontSize: 13),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        error.toString(),
+                                        style: TextStyle(color: Colors.grey[700], fontSize: 10),
+                                        textAlign: TextAlign.center,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        Positioned(
+                          bottom: 10,
+                          right: 10,
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.6),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.zoom_in, color: Colors.white, size: 18),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Tap to view full size',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             const Text(
               'Update Status',
@@ -745,6 +1145,84 @@ class _AppointmentDetailsSheet extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static void _showFullScreenImage(BuildContext context, String imageUrl) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(10),
+        child: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 4.0,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.contain,
+                  headers: const {
+                    'Cache-Control': 'no-cache',
+                  },
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Center(
+                      child: CircularProgressIndicator(
+                        value: loadingProgress.expectedTotalBytes != null
+                            ? loadingProgress.cumulativeBytesLoaded /
+                                loadingProgress.expectedTotalBytes!
+                            : null,
+                        color: Colors.white,
+                      ),
+                    );
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    print('[Admin-FullScreen] Error: $error');
+                    print('[Admin-FullScreen] URL: $imageUrl');
+                    return Container(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.error_outline, size: 60, color: Colors.white),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Failed to load image',
+                            style: TextStyle(color: Colors.white, fontSize: 16),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'URL: ${imageUrl.length > 50 ? imageUrl.substring(0, 50) + "..." : imageUrl}',
+                            style: const TextStyle(color: Colors.white70, fontSize: 10),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            Positioned(
+              top: 20,
+              right: 20,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
             ),
           ],
         ),

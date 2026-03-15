@@ -41,7 +41,7 @@ class AppUser {
     );
   }
 
-  get specialization => null;
+  Null get specialization => null;
 }
 
 class ManageUsersPage extends StatefulWidget {

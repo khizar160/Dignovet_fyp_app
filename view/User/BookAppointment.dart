@@ -1171,6 +1171,16 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
               ),
               child: ElevatedButton(
                 onPressed: () {
+                  if (doctor.availableDays == null || doctor.availableDays!.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Doctor availability information is not complete'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+                  
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -1344,8 +1354,8 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                   _detailSection(
                     icon: Icons.info_outline,
                     title: 'About',
-                    content: doctor.about?.isNotEmpty == true
-                        ? doctor.about!
+                    content: (doctor.about?.isNotEmpty == true)
+                        ? doctor.about ?? 'No description available'
                         : 'No description available',
                   ),
                   const SizedBox(height: 20),
@@ -1448,6 +1458,17 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                     child: ElevatedButton(
                       onPressed: () {
                         Navigator.pop(context);
+                        
+                        if (doctor.availableDays == null || doctor.availableDays!.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Doctor availability information is not complete'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                          return;
+                        }
+                        
                         Navigator.push(
                           context,
                           MaterialPageRoute(

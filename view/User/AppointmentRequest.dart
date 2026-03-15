@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_application_1/provider/language_provider.dart';
 
 class AppointmentSentPage extends StatelessWidget {
-  const AppointmentSentPage({Key? key}) : super(key: key);
+  const AppointmentSentPage({super.key});
 
   @override
   Widget build(BuildContext context) {

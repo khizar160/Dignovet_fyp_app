@@ -234,8 +234,7 @@ class _UserSettingsPageState extends State<UserSettingsPage>
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
-                  languageProvider.translate('language') +
-                      ' ${languageProvider.translate(isEnglish ? 'english' : 'urdu')}',
+                  '${languageProvider.translate('language')} ${languageProvider.translate(isEnglish ? 'english' : 'urdu')}',
                   style: const TextStyle(fontWeight: FontWeight.w500),
                 ),
                 backgroundColor: primaryTeal,

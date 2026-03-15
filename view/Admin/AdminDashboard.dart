@@ -4,6 +4,9 @@ import 'package:flutter_application_1/view/Admin/edit_profile_page.dart';
 import 'package:flutter_application_1/view/Admin/manage_appointments.dart';
 import 'package:flutter_application_1/view/Admin/manage_doctor.dart';
 import 'package:flutter_application_1/view/Admin/manage_user.dart';
+import 'package:flutter_application_1/view/Admin/manage_refunds.dart';
+import 'package:flutter_application_1/view/Admin/admin_wallet.dart';
+import 'package:flutter_application_1/view/Admin/admin_support_inbox.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -17,7 +20,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
   // Professional Color Palette
   static const Color primaryTeal = Color(0xFF00796B);
   static const Color lightTeal = Color(0xFF4DB6AC);
-  static const Color cardGrey = Color(0xFFF8F9FA);
   static const Color itemTeal = Color(0xFFB2DFDB);
   static const Color darkGrey = Color(0xFF2C3E50);
   static const Color lightGrey = Color(0xFF95A5A6);
@@ -268,8 +270,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
           children: [
             _professionalManageBtn("Manage Users", Icons.people_outline_rounded),
             _professionalManageBtn("Manage Doctors", Icons.medical_information_outlined),
-            _professionalManageBtn("Manage Admins", Icons.admin_panel_settings_outlined),
             _professionalManageBtn("Appointments", Icons.calendar_today_outlined),
+            _professionalManageBtn("Refund Management", Icons.monetization_on_outlined),
+            _professionalManageBtn("Admin Wallet", Icons.account_balance_wallet_outlined),
+            _professionalManageBtn("Support Inbox", Icons.support_agent),
           ],
         ),
       ],
@@ -307,23 +311,42 @@ class _AdminDashboardState extends State<AdminDashboard> {
               );
             }
             else if (title == "Manage Doctors") {
-              // Add navigation to Manage Doctors page
-                Navigator.push(
+              Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (context) => const ManageDoctorsPage(),
                 ),
               );
             }
-            else if (title == "Manage Admins") {
-              // Add navigation to Manage Admins page
-            }
             else if (title == "Appointments") {
-              // Add navigation to Appointments page
-                Navigator.push(
+              Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (context) => const ManageAppointmentsPage(),
+                ),
+              );
+            }
+            else if (title == "Refund Management") {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const ManageRefundsPage(),
+                ),
+              );
+            }
+            else if (title == "Admin Wallet") {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminWalletPage(),
+                ),
+              );
+            }
+            else if (title == "Support Inbox") {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminSupportInboxPage(),
                 ),
               );
             }

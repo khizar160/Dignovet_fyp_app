@@ -622,6 +622,9 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
             const SizedBox(height: 20),
             _sectionLabel("Appointment Information"),
             _buildAppointmentDetails(),
+            const SizedBox(height: 20),
+            _sectionLabel("Payment Information"),
+            _buildPaymentScreenshotSection(),
             const SizedBox(height: 30),
             _buildActionButtons(context),
             const SizedBox(height: 20),
@@ -676,8 +679,8 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
           CircleAvatar(
             radius: 30,
             backgroundColor: primaryTeal.withOpacity(0.2),
-            backgroundImage: user!.imageUrl != null ? NetworkImage(user!.imageUrl!) : null,
-            child: user!.imageUrl == null ? Icon(Icons.person, color: darkTeal) : null,
+            backgroundImage: NetworkImage(user!.imageUrl!),
+            child: null,
           ),
           const SizedBox(width: 15),
           Expanded(
@@ -799,6 +802,307 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildPaymentScreenshotSection() {
+    // Validate URL
+    final screenshotUrl = widget.appointment.paymentScreenshotUrl;
+    final bool hasValidUrl = screenshotUrl != null && 
+                              screenshotUrl.isNotEmpty && 
+                              (screenshotUrl.startsWith('http://') || screenshotUrl.startsWith('https://'));
+    
+    print('[Doctor-Payment] Screenshot URL: $screenshotUrl');
+    print('[Doctor-Payment] Is Valid: $hasValidUrl');
+    
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10)],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.payment, color: Colors.grey, size: 22),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Payment Amount', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)}',
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Icon(Icons.call_to_action, color: Colors.grey, size: 22),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Consultation Type', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.appointment.consultationType == 'online' ? 'Online Consultation' : 'Home Visit',
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (hasValidUrl) ...[
+            const Divider(height: 30),
+            const Text(
+              'Payment Screenshot',
+              style: TextStyle(color: Colors.grey, fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: () => _showFullScreenImage(widget.appointment.paymentScreenshotUrl!),
+              child: Container(
+                height: 250,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: primaryTeal.withOpacity(0.3), width: 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: primaryTeal.withOpacity(0.1),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.network(
+                        widget.appointment.paymentScreenshotUrl!,
+                        fit: BoxFit.cover,
+                        headers: const {
+                          'Cache-Control': 'no-cache',
+                        },
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) {
+                            print('[Doctor-Screenshot] Image loaded');
+                            return child;
+                          }
+                          return Center(
+                            child: CircularProgressIndicator(
+                              value: loadingProgress.expectedTotalBytes != null
+                                  ? loadingProgress.cumulativeBytesLoaded /
+                                      loadingProgress.expectedTotalBytes!
+                                  : null,
+                              color: primaryTeal,
+                            ),
+                          );
+                        },
+                        errorBuilder: (context, error, stackTrace) {
+                          final url = widget.appointment.paymentScreenshotUrl ?? 'null';
+                          print('[Doctor-Screenshot] \u274c ERROR: $error');
+                          print('[Doctor-Screenshot] URL: $url');
+                          return Container(
+                            color: Colors.grey[200],
+                            child: Center(
+                              child: SingleChildScrollView(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.error_outline, size: 50, color: Colors.red[400]),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Failed to load screenshot',
+                                      style: TextStyle(color: Colors.red[700], fontWeight: FontWeight.bold),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'URL: ${url.length > 35 ? url.substring(0, 35) + '...' : url}',
+                                      style: TextStyle(color: Colors.grey[600], fontSize: 9),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      '\u2022 Check storage permissions\n\u2022 Verify file exists\n\u2022 Check CORS policy',
+                                      style: TextStyle(color: Colors.grey[600], fontSize: 9),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      Positioned(
+                        bottom: 10,
+                        right: 10,
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.6),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.zoom_in, color: Colors.white, size: 18),
+                              SizedBox(width: 4),
+                              Text(
+                                'Tap to view',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ] else
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.red.withOpacity(0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded, color: Colors.red[700], size: 22),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          screenshotUrl != null && screenshotUrl.isNotEmpty 
+                            ? 'Invalid screenshot URL' 
+                            : 'No payment screenshot provided',
+                          style: TextStyle(
+                            color: Colors.red[700],
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (screenshotUrl != null && screenshotUrl.isNotEmpty && !hasValidUrl) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'URL must start with http:// or https://',
+                      style: TextStyle(
+                        color: Colors.red[600],
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showFullScreenImage(String imageUrl) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(10),
+        child: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 4.0,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.contain,
+                  headers: const {
+                    'Cache-Control': 'no-cache',
+                  },
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Center(
+                      child: CircularProgressIndicator(
+                        value: loadingProgress.expectedTotalBytes != null
+                            ? loadingProgress.cumulativeBytesLoaded /
+                                loadingProgress.expectedTotalBytes!
+                            : null,
+                        color: Colors.white,
+                      ),
+                    );
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    print('[Doctor-FullScreen] Error: $error');
+                    print('[Doctor-FullScreen] URL: $imageUrl');
+                    return Container(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.error_outline, size: 60, color: Colors.white),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Failed to load image',
+                            style: TextStyle(color: Colors.white, fontSize: 16),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Check connection or try again',
+                            style: TextStyle(color: Colors.white70, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            Positioned(
+              top: 20,
+              right: 20,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

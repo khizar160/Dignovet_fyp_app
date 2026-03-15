@@ -505,17 +505,19 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../model/doctor_model.dart';
+import '../../model/app_user.dart';
 import '../../model/appointment_model.dart';
 import '../../services/Appointment Service/appointment_services.dart';
 import '../../services/notification service/notification_service.dart';
 import '../../provider/language_provider.dart';
-import '../User/ChatScreen.dart';
 
 class BookAppointmentPage extends StatefulWidget {
-  final DoctorProfile doctorProfile;
+  final AppUser doctor;
 
-  const BookAppointmentPage({super.key, required this.doctorProfile});
+  const BookAppointmentPage({super.key, required this.doctor});
 
   @override
   State<BookAppointmentPage> createState() => _BookAppointmentPageState();
@@ -538,11 +540,30 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
   bool isAnimalLoading = true;
 
   List<String> availableSlotsForSelectedDay = [];
+  GoogleMapController? _mapController;
+  final Set<Marker> _markers = {};
+
+  // Get doctor data as DoctorProfile for consistency
+  DoctorProfile get doctorProfile => DoctorProfile(
+    id: widget.doctor.id,
+    specialization: widget.doctor.specialization ?? 'General',
+    experience: widget.doctor.experience ?? 0,
+    clinicName: widget.doctor.clinicName ?? 'Clinic',
+    clinicAddress: widget.doctor.clinicAddress ?? 'Address',
+    latitude: widget.doctor.latitude,
+    longitude: widget.doctor.longitude,
+    about: widget.doctor.about ?? '',
+    availableDays: widget.doctor.availableDays ?? [],
+    availableSlots: widget.doctor.availableSlots ?? [],
+    imageUrl: widget.doctor.imageUrl,
+  );
 
   @override
   void initState() {
     super.initState();
     _fetchAnimals();
+    _initializeMap();
+    _updateSlotsForSelectedDate(selectedDate); // Initialize slots for today
   }
 
   /// ------------------ FETCH USER ANIMALS ------------------
@@ -570,16 +591,65 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
     }
   }
 
+  /// ------------------ INITIALIZE MAP ------------------
+  void _initializeMap() {
+    final doctor = doctorProfile;
+    if (doctor.latitude != null && doctor.longitude != null) {
+      setState(() {
+        _markers.add(
+          Marker(
+            markerId: const MarkerId('clinic_location'),
+            position: LatLng(
+              doctor.latitude!,
+              doctor.longitude!,
+            ),
+            infoWindow: InfoWindow(
+              title: doctor.clinicName,
+              snippet: doctor.clinicAddress,
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          ),
+        );
+      });
+    }
+  }
+
+  /// ------------------ OPEN IN GOOGLE MAPS ------------------
+  Future<void> _openInGoogleMaps() async {
+    final doctor = doctorProfile;
+    if (doctor.latitude == null || doctor.longitude == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location not available')),
+      );
+      return;
+    }
+
+    final lat = doctor.latitude;
+    final lng = doctor.longitude;
+    final url = Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lng');
+
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open Google Maps')),
+        );
+      }
+    }
+  }
+
   /// ------------------ GET AVAILABLE SLOTS FOR DATE ------------------
   void _updateSlotsForSelectedDate(DateTime date) {
     final weekday = date.weekday; // 1 = Monday, 7 = Sunday
     final weekdayName = _weekdayIntToString(weekday);
+    final doctor = doctorProfile;
 
     setState(() {
       selectedDate = date;
       availableSlotsForSelectedDay =
-          widget.doctorProfile.availableDays.contains(weekdayName)
-              ? widget.doctorProfile.availableSlots
+          doctor.availableDays.contains(weekdayName)
+              ? doctor.availableSlots
               : [];
       selectedSlot = ""; // reset slot on date change
     });
@@ -625,10 +695,11 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
 
     final userId = FirebaseAuth.instance.currentUser!.uid;
 
+    final doctor = doctorProfile;
     final appointment = AppointmentModel(
       id: '',
       userId: userId,
-      doctorId: widget.doctorProfile.id,
+      doctorId: doctor.id,
       animalName: selectedAnimal!['name'] ?? 'Unknown',
       date: Timestamp.fromDate(selectedDate),
       time: selectedSlot,
@@ -642,7 +713,7 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
 
       // Send notification to doctor
       await NotificationService().sendNotification(
-        receiverId: widget.doctorProfile.id,
+        receiverId: doctor.id,
         title: 'New Appointment Request',
         message:
             'You have a new appointment request for ${selectedAnimal!['name']}.',
@@ -693,6 +764,14 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
             _sectionHeader(languageProvider.translate('doctor'), languageProvider),
             _doctorCard(languageProvider),
             const SizedBox(height: 20),
+            
+            // Clinic Location Section with Google Maps
+            if (doctorProfile.latitude != null && doctorProfile.longitude != null) ...[
+              _sectionHeader(languageProvider.t('Clinic Location', 'کلینک کا مقام'), languageProvider),
+              _clinicLocationCard(languageProvider),
+              const SizedBox(height: 20),
+            ],
+            
             _sectionHeader(languageProvider.translate('animal_details'), languageProvider),
             _animalCard(languageProvider),
             const SizedBox(height: 20),
@@ -739,6 +818,7 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
   }
 
   Widget _doctorCard(LanguageProvider languageProvider) {
+    final doctor = doctorProfile;
     return Container(
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
@@ -750,16 +830,285 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
         children: [
           CircleAvatar(
             radius: 30,
-            backgroundImage: NetworkImage(widget.doctorProfile.imageUrl),
+            backgroundImage: doctor.imageUrl.isNotEmpty
+                ? NetworkImage(doctor.imageUrl)
+                : null,
+            child: doctor.imageUrl.isEmpty
+                ? Icon(Icons.person, size: 35, color: darkTeal)
+                : null,
           ),
           const SizedBox(width: 15),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(widget.doctorProfile.id, style: const TextStyle(fontWeight: FontWeight.bold)),
-              Text(widget.doctorProfile.specialization),
-              Text(widget.doctorProfile.clinicName),
-            ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.doctor.name,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  doctor.specialization,
+                  style: TextStyle(color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Icon(Icons.local_hospital, size: 14, color: Colors.grey[600]),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        doctor.clinicName,
+                        style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        doctor.clinicAddress,
+                        style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _clinicLocationCard(LanguageProvider languageProvider) {
+    final doctor = doctorProfile;
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: primaryTeal.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.2),
+            blurRadius: 15,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          // Map Container with better styling
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            child: Stack(
+              children: [
+                SizedBox(
+                  height: 280,
+                  child: GoogleMap(
+                    initialCameraPosition: CameraPosition(
+                      target: LatLng(
+                        doctor.latitude!,
+                        doctor.longitude!,
+                      ),
+                      zoom: 15,
+                    ),
+                    markers: _markers,
+                    myLocationButtonEnabled: true,
+                    myLocationEnabled: true,
+                    zoomControlsEnabled: true,
+                    zoomGesturesEnabled: true,
+                    scrollGesturesEnabled: true,
+                    mapType: MapType.normal,
+                    compassEnabled: true,
+                    onMapCreated: (GoogleMapController controller) {
+                      _mapController = controller;
+                    },
+                  ),
+                ),
+                // Overlay badge showing clinic name
+                Positioned(
+                  top: 10,
+                  left: 10,
+                  right: 10,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 10,
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.location_on, color: Colors.red, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            doctor.clinicName,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Location Details
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: primaryTeal.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(Icons.location_city, color: darkTeal, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            languageProvider.t('Clinic Name', 'کلینک کا نام'),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            doctor.clinicName,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: primaryTeal.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(Icons.place, color: darkTeal, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            languageProvider.t('Address', 'پتہ'),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            doctor.clinicAddress,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.black87,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                // Action Buttons Row
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: _openInGoogleMaps,
+                        icon: const Icon(Icons.directions, size: 20),
+                        label: Text(
+                          languageProvider.t('Get Directions', 'راستہ دیکھیں'),
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: darkTeal,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          // Show in map with full screen
+                          if (_mapController != null) {
+                            _mapController!.animateCamera(
+                              CameraUpdate.newCameraPosition(
+                                CameraPosition(
+                                  target: LatLng(
+                                    doctor.latitude!,
+                                    doctor.longitude!,
+                                  ),
+                                  zoom: 17,
+                                  tilt: 45,
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                        icon: Icon(Icons.zoom_in, color: darkTeal, size: 20),
+                        label: Text(
+                          languageProvider.t('View Map', 'نقشہ دیکھیں'),
+                          style: TextStyle(color: darkTeal, fontSize: 13),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(color: darkTeal, width: 1.5),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -779,7 +1128,7 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
           : animals.isEmpty
               ? Text(languageProvider.t('No animals registered.', 'کوئی جانور رجسٹرڈ نہیں۔'))
               : DropdownButtonFormField<Map<String, dynamic>>(
-                  value: selectedAnimal,
+                  initialValue: selectedAnimal,
                   decoration: InputDecoration(
                     labelText: languageProvider.translate('select_animal'),
                     border: OutlineInputBorder(
@@ -802,13 +1151,14 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
   }
 
   Widget _calendarWidget() {
+    final doctor = doctorProfile;
     return CalendarDatePicker(
       initialDate: selectedDate,
       firstDate: DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 30)),
       selectableDayPredicate: (date) {
         final weekday = _weekdayIntToString(date.weekday);
-        return widget.doctorProfile.availableDays.contains(weekday);
+        return doctor.availableDays.contains(weekday);
       },
       onDateChanged: _updateSlotsForSelectedDate,
     );

@@ -284,6 +284,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:geocoding/geocoding.dart';
 import '../../model/app_user.dart';
 
 class EditDoctorProfilePage extends StatefulWidget {
@@ -307,7 +308,11 @@ class _EditDoctorProfilePageState extends State<EditDoctorProfilePage> {
   late TextEditingController _experienceController;
   late TextEditingController _clinicNameController;
   late TextEditingController _clinicAddressController;
+  late TextEditingController _latitudeController;
+  late TextEditingController _longitudeController;
   late TextEditingController _aboutController;
+  late TextEditingController _onlineConsultationFeeController;
+  late TextEditingController _homeVisitFeeController;
 
   File? _imageFile;
   bool _saving = false;
@@ -340,7 +345,11 @@ class _EditDoctorProfilePageState extends State<EditDoctorProfilePage> {
     _experienceController = TextEditingController(text: widget.user.experience?.toString() ?? "");
     _clinicNameController = TextEditingController(text: widget.user.clinicName ?? "");
     _clinicAddressController = TextEditingController(text: widget.user.clinicAddress ?? "");
+    _latitudeController = TextEditingController(text: widget.user.latitude?.toString() ?? "");
+    _longitudeController = TextEditingController(text: widget.user.longitude?.toString() ?? "");
     _aboutController = TextEditingController(text: widget.user.about ?? "");
+    _onlineConsultationFeeController = TextEditingController(text: widget.user.onlineConsultationFee?.toString() ?? "");
+    _homeVisitFeeController = TextEditingController(text: widget.user.homeVisitFee?.toString() ?? "");
 
     _selectedDays = List.from(widget.user.availableDays ?? []);
     _selectedSlots = List.from(widget.user.availableSlots ?? []);
@@ -354,7 +363,11 @@ class _EditDoctorProfilePageState extends State<EditDoctorProfilePage> {
     _experienceController.dispose();
     _clinicNameController.dispose();
     _clinicAddressController.dispose();
+    _latitudeController.dispose();
+    _longitudeController.dispose();
     _aboutController.dispose();
+    _onlineConsultationFeeController.dispose();
+    _homeVisitFeeController.dispose();
     super.dispose();
   }
 
@@ -407,6 +420,37 @@ class _EditDoctorProfilePageState extends State<EditDoctorProfilePage> {
     }
   }
 
+  /// Get Coordinates from Address using Geocoding
+  Future<void> _getCoordinatesFromAddress() async {
+    if (_clinicAddressController.text.trim().isEmpty) {
+      _showSnackBar('Please enter clinic address first', isError: true);
+      return;
+    }
+
+    try {
+      setState(() => _saving = true);
+      final address = _clinicAddressController.text.trim();
+      log('Geocoding address: $address');
+      
+      List<Location> locations = await locationFromAddress(address);
+      
+      if (locations.isNotEmpty) {
+        setState(() {
+          _latitudeController.text = locations.first.latitude.toStringAsFixed(6);
+          _longitudeController.text = locations.first.longitude.toStringAsFixed(6);
+        });
+        _showSnackBar('Location coordinates fetched successfully!');
+      } else {
+        _showSnackBar('No coordinates found for this address', isError: true);
+      }
+    } catch (e) {
+      log('Geocoding Error: $e');
+      _showSnackBar('Failed to get coordinates. Please enter manually', isError: true);
+    } finally {
+      setState(() => _saving = false);
+    }
+  }
+
   /// Save Profile to Users Collection
   Future<void> _saveProfile() async {
     if (!_formKey.currentState!.validate()) {
@@ -441,9 +485,13 @@ class _EditDoctorProfilePageState extends State<EditDoctorProfilePage> {
         'experience': int.parse(_experienceController.text.trim()),
         'clinicName': _clinicNameController.text.trim(),
         'clinicAddress': _clinicAddressController.text.trim(),
+        'latitude': _latitudeController.text.trim().isNotEmpty ? double.parse(_latitudeController.text.trim()) : null,
+        'longitude': _longitudeController.text.trim().isNotEmpty ? double.parse(_longitudeController.text.trim()) : null,
         'about': _aboutController.text.trim(),
         'availableDays': _selectedDays,
         'availableSlots': _selectedSlots,
+        'onlineConsultationFee': _onlineConsultationFeeController.text.trim().isNotEmpty ? double.parse(_onlineConsultationFeeController.text.trim()) : null,
+        'homeVisitFee': _homeVisitFeeController.text.trim().isNotEmpty ? double.parse(_homeVisitFeeController.text.trim()) : null,
         'profileCompleted': true,
         'updatedAt': FieldValue.serverTimestamp(),
       };
@@ -579,7 +627,59 @@ class _EditDoctorProfilePageState extends State<EditDoctorProfilePage> {
                   keyboardType: TextInputType.number),
               _buildTextField("Clinic Name", _clinicNameController, Icons.local_hospital_outlined),
               _buildTextField("Clinic Address", _clinicAddressController, Icons.location_on_outlined),
+              
+              // Location Coordinates Section with Get Location Button
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildTextField(
+                      "Latitude", 
+                      _latitudeController, 
+                      Icons.my_location,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildTextField(
+                      "Longitude", 
+                      _longitudeController, 
+                      Icons.location_searching,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    ),
+                  ),
+                ],
+              ),
+              
+              // Get Location from Address Button
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _getCoordinatesFromAddress,
+                  icon: const Icon(Icons.map_outlined),
+                  label: const Text('Get Coordinates from Address'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: primaryTeal,
+                    side: BorderSide(color: primaryTeal, width: 2),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+              
               _buildTextField("About", _aboutController, Icons.info_outline, maxLines: 4),
+
+              const SizedBox(height: 24),
+
+              // Consultation Fees Section
+              _buildSectionTitle("Consultation Fees (PKR)"),
+              _buildTextField("Online Consultation Fee (Rs)", _onlineConsultationFeeController, Icons.videocam_outlined,
+                  keyboardType: TextInputType.numberWithOptions(decimal: true)),
+              _buildTextField("Home Visit Fee (Rs)", _homeVisitFeeController, Icons.home_outlined,
+                  keyboardType: TextInputType.numberWithOptions(decimal: true)),
 
               const SizedBox(height: 24),
 
