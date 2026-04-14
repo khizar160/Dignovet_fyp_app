@@ -507,12 +507,16 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
       final dateTime = widget.appointment.date.toDate();
       final formattedDate = "${_getDayName(dateTime.weekday)}, ${_getMonthName(dateTime.month)} ${dateTime.day}";
       final appointmentTimeStr = "$formattedDate at ${widget.appointment.time}";
+      final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+      final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
 
       // Send notification with doctor's name
       await _notificationService.sendNotification(
         receiverId: widget.appointment.userId,
         title: 'Appointment Approved!',
-        message: 'Dr. ${doctor?.name ?? "Your doctor"} has approved your appointment for ${animalData?['name'] ?? widget.appointment.animalName} on $appointmentTimeStr.',
+        message: 'Dr. ${doctor?.name ?? "Your doctor"} has approved your appointment for ${animalData?['name'] ?? widget.appointment.animalName}.\nAppointment On: $appointmentTimeStr\nBooked On: $bookedOn',
         appointmentId: widget.appointment.id,
         type: 'appointment_approved',
       );
@@ -556,12 +560,16 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
       final dateTime = widget.appointment.date.toDate();
       final formattedDate = "${_getDayName(dateTime.weekday)}, ${_getMonthName(dateTime.month)} ${dateTime.day}";
       final appointmentTimeStr = "$formattedDate at ${widget.appointment.time}";
+      final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+      final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
 
       // Send notification
       await _notificationService.sendNotification(
         receiverId: widget.appointment.userId,
         title: 'Appointment Declined',
-        message: 'Dr. ${doctor?.name ?? "Your doctor"} has declined your appointment for ${animalData?['name'] ?? widget.appointment.animalName} scheduled on $appointmentTimeStr.',
+        message: 'Dr. ${doctor?.name ?? "Your doctor"} has declined your appointment for ${animalData?['name'] ?? widget.appointment.animalName}.\nAppointment On: $appointmentTimeStr\nBooked On: $bookedOn',
         appointmentId: widget.appointment.id,
         type: 'appointment_declined',
       );
@@ -752,8 +760,13 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
   }
 
   Widget _buildAppointmentDetails() {
-    final dateTime = widget.appointment.date.toDate();
-    final formattedDate = "${_getDayName(dateTime.weekday)}, ${_getMonthName(dateTime.month)} ${dateTime.day}, ${dateTime.year}";
+    final appointmentDate = widget.appointment.date.toDate().toLocal();
+    final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+    final appointmentOn =
+        '${_formatTimelineDate(appointmentDate)}  •  ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+    final bookedOn = bookedAt == null
+        ? 'Not recorded'
+        : '${_formatTimelineDate(bookedAt)}  •  ${_formatClock(bookedAt)}';
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -765,7 +778,17 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
       ),
       child: Column(
         children: [
-          _detailRow(Icons.calendar_today_outlined, "Date & Time", "$formattedDate\n${widget.appointment.time}"),
+          _detailRow(
+            Icons.calendar_today_outlined,
+            'Appointment On',
+            appointmentOn,
+          ),
+          const Divider(height: 30),
+          _detailRow(
+            Icons.schedule_send_outlined,
+            'Booked On',
+            bookedOn,
+          ),
           const Divider(height: 30),
           _detailRow(Icons.description_outlined, "Reason for Visit", widget.appointment.problem),
           const Divider(height: 30),
@@ -783,6 +806,18 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage> {
   String _getMonthName(int month) {
     const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     return months[month - 1];
+  }
+
+  String _formatTimelineDate(DateTime date) {
+    return '${_getDayName(date.weekday)}, ${_getMonthName(date.month)} ${date.day}, ${date.year}';
+  }
+
+  String _formatClock(DateTime date) {
+    final hour24 = date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final isPm = hour24 >= 12;
+    final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+    return '$hour12:$minute ${isPm ? 'PM' : 'AM'}';
   }
 
   Widget _detailRow(IconData icon, String label, String value) {

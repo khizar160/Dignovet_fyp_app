@@ -630,10 +630,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../model/app_user.dart';
 import '../User/AppoiintmentBooking.dart';
+import '../User/Notifications.dart';
+import '../User/Profile.dart';
+import '../User/UserSettingsPage.dart';
 import '../../services/firebase_authentication/auth_api.dart';
 import '../../provider/language_provider.dart';
+import '../../services/location_service.dart';
 
 class AppointmentDashboardPage extends StatefulWidget {
   const AppointmentDashboardPage({super.key});
@@ -644,6 +649,17 @@ class AppointmentDashboardPage extends StatefulWidget {
 
 class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
   String _selectedSpecialist = 'All Specialists';
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  final ScrollController _pageScrollController = ScrollController();
+
+  // Location variables
+  Position? _userPosition;
+  bool _isLoadingLocation = false;
+  String _locationError = '';
+  final double _nearbyRadius = 50.0; // 50 km radius
+  bool _sortByProximity = false; // Toggle for nearby doctors
 
   // Your color scheme
   final Color primaryDark = const Color(0xFF00796B);
@@ -660,6 +676,81 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
     'Cardiology',
     'Orthopedics',
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      final value = _searchController.text.trim();
+      if (value != _searchQuery) {
+        setState(() {
+          _searchQuery = value;
+        });
+      }
+    });
+    _fetchUserLocation();
+  }
+
+  /// Fetch user location (auto-enable if needed)
+  Future<void> _fetchUserLocation() async {
+    setState(() => _isLoadingLocation = true);
+    try {
+      final position = await LocationService.getUserLocation();
+      setState(() {
+        _userPosition = position;
+        _locationError = '';
+        _isLoadingLocation = false;
+      });
+      print('✅ User location fetched: ${position.latitude}, ${position.longitude}');
+      
+      // Show success message only
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📍 Location enabled! You can now find nearby doctors.'),
+            duration: Duration(milliseconds: 1500),
+            backgroundColor: Color(0xFF00796B),
+          ),
+        );
+      }
+    } catch (e) {
+      // Silently fail - still show all doctors
+      setState(() {
+        _locationError = e.toString();
+        _isLoadingLocation = false;
+        // Don't set _userPosition to null, let it stay null
+      });
+      print('ℹ️ Location not available: $e');
+      // Don't show error message - just continue with all doctors visible
+    }
+  }
+
+  /// Calculate distance between user and doctor
+  double? _calculateDistance(AppUser doctor) {
+    if (_userPosition == null) return null;
+    if (doctor.latitude == null || doctor.longitude == null) return null;
+
+    try {
+      final distance = LocationService.calculateDistanceInKm(
+        _userPosition!.latitude,
+        _userPosition!.longitude,
+        doctor.latitude!,
+        doctor.longitude!,
+      );
+      return distance;
+    } catch (e) {
+      print('Error calculating distance: $e');
+      return null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    _pageScrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -694,13 +785,16 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                     ),
                   ),
                   child: SingleChildScrollView(
+                    controller: _pageScrollController,
                     physics: const BouncingScrollPhysics(),
-                    padding: const EdgeInsets.all(24),
+                    padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const SizedBox(height: 8),
                         _buildWelcomeCard(languageProvider),
+                        const SizedBox(height: 24),
+                        _buildSearchBar(languageProvider),
                         const SizedBox(height: 32),
                         Text(
                           languageProvider.t('Select Specialist', 'ماہر منتخب کریں'),
@@ -714,8 +808,15 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                         const SizedBox(height: 14),
                         _buildFilterList(languageProvider),
                         const SizedBox(height: 24),
+                        if (_userPosition != null)
+                          GestureDetector(
+                            onTap: _toggleProximitySort,
+                            child: _buildProximityButton(),
+                          ),
+                        if (_userPosition != null)
+                          const SizedBox(height: 16),
                         _buildDoctorsGrid(currentUserId ?? '', languageProvider),
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 16),
                       ],
                     ),
                   ),
@@ -730,55 +831,90 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
 
   Widget _buildAppBar(LanguageProvider languageProvider) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Row(
-            children: [
-              GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.3),
-                      width: 1,
-                    ),
-                  ),
-                  child: const Icon(
-                    Icons.arrow_back_ios_new,
-                    color: Colors.white,
-                    size: 20,
-                  ),
+          GestureDetector(
+            onTap: () => Navigator.pop(context),
+            child: Container(
+              padding: const EdgeInsets.all(9),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.white.withOpacity(0.3),
+                  width: 1,
                 ),
               ),
-              const SizedBox(width: 12),
-              Text(
-                languageProvider.translate('book_appointment'),
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 22,
-                  letterSpacing: -0.5,
-                  shadows: [
-                    Shadow(
-                      color: Colors.black26,
-                      blurRadius: 4,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
+              child: const Icon(
+                Icons.arrow_back_ios_new,
+                color: Colors.white,
+                size: 20,
               ),
-            ],
+            ),
           ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              languageProvider.translate('book_appointment'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+                letterSpacing: -0.5,
+                shadows: [
+                  Shadow(
+                    color: Colors.black26,
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
           Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              _buildAppBarIcon(Icons.search),
-              const SizedBox(width: 8),
-              _buildAppBarIcon(Icons.notifications_outlined),
+              _buildAppBarIcon(Icons.search_rounded, () {
+                if (_pageScrollController.hasClients) {
+                  _pageScrollController.animateTo(
+                    180,
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOut,
+                  );
+                }
+                Future.delayed(const Duration(milliseconds: 180), () {
+                  if (mounted) {
+                    _searchFocusNode.requestFocus();
+                  }
+                });
+              }),
+              const SizedBox(width: 6),
+              _buildAppBarIcon(Icons.settings_outlined, () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const UserSettingsPage(),
+                  ),
+                );
+              }),
+              const SizedBox(width: 6),
+              _buildAppBarIcon(Icons.notifications_outlined, () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => NotificationsPage()),
+                );
+              }),
+              const SizedBox(width: 6),
+              _buildAppBarIcon(Icons.person_outline, () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => EditProfilePage()),
+                );
+              }),
             ],
           ),
         ],
@@ -786,21 +922,71 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
     );
   }
 
-  Widget _buildAppBarIcon(IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.3),
-          width: 1,
+  Widget _buildAppBarIcon(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.2),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.3),
+            width: 1,
+          ),
+        ),
+        child: Icon(
+          icon,
+          color: Colors.white,
+          size: 20,
         ),
       ),
-      child: Icon(
-        icon,
+    );
+  }
+
+  Widget _buildSearchBar(LanguageProvider languageProvider) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      decoration: BoxDecoration(
         color: Colors.white,
-        size: 22,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: primaryDark.withOpacity(0.2),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: primaryDark.withOpacity(0.08),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: TextField(
+        controller: _searchController,
+        focusNode: _searchFocusNode,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          border: InputBorder.none,
+          icon: Icon(Icons.search_rounded, color: primaryDark, size: 22),
+          hintText: languageProvider.t(
+            'Search doctor by name or specialization',
+            'ڈاکٹر کو نام یا مہارت سے تلاش کریں',
+          ),
+          hintStyle: TextStyle(
+            color: Colors.grey[500],
+            fontSize: 14,
+          ),
+          suffixIcon: _searchQuery.isEmpty
+              ? null
+              : IconButton(
+                  onPressed: () {
+                    _searchController.clear();
+                    _searchFocusNode.unfocus();
+                  },
+                  icon: Icon(Icons.close_rounded, color: Colors.grey[600]),
+                ),
+        ),
       ),
     );
   }
@@ -932,6 +1118,89 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
     );
   }
 
+  Widget _buildProximityButton() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        gradient: _sortByProximity
+            ? LinearGradient(
+                colors: [primaryDark, primaryMedium],
+              )
+            : LinearGradient(
+                colors: [primaryLight.withOpacity(0.3), primaryMedium.withOpacity(0.2)],
+              ),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: _sortByProximity ? Colors.transparent : primaryDark.withOpacity(0.3),
+          width: 1.5,
+        ),
+        boxShadow: _sortByProximity
+            ? [
+                BoxShadow(
+                  color: primaryDark.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ]
+            : [],
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.near_me,
+            color: _sortByProximity ? Colors.white : primaryDark,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _sortByProximity
+                  ? 'Showing nearby doctors first'
+                  : 'Find nearby doctors (within 50 km)',
+              style: TextStyle(
+                color: _sortByProximity ? Colors.white : primaryDark,
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: _sortByProximity
+                  ? Colors.white.withOpacity(0.3)
+                  : primaryDark.withOpacity(0.1),
+            ),
+            child: Icon(
+              _sortByProximity ? Icons.check : Icons.add,
+              color: _sortByProximity ? Colors.white : primaryDark,
+              size: 18,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toggleProximitySort() {
+    setState(() {
+      _sortByProximity = !_sortByProximity;
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _sortByProximity
+              ? '📍 Showing nearby doctors first!'
+              : '📋 Showing all doctors',
+        ),
+        duration: const Duration(milliseconds: 1500),
+        backgroundColor: primaryDark,
+      ),
+    );
+  }
+
   Widget _buildDoctorsGrid(String currentUserId, LanguageProvider languageProvider) {
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
@@ -968,14 +1237,50 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
           );
         }
 
-        final doctors = snapshot.data!.docs
-            .map((doc) => AppUser.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-            .where((doctor) {
-          if (_selectedSpecialist == 'All Specialists') return true;
-          return doctor.specialization == _selectedSpecialist;
-        }).toList();
+        final query = _searchQuery.toLowerCase();
 
-        if (doctors.isEmpty) {
+        // Convert to AppUser objects with distance calculation
+        final doctorsWithDistance = snapshot.data!.docs
+            .map((doc) {
+              final appUser = AppUser.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+              final distance = _calculateDistance(appUser);
+              return {'user': appUser, 'distance': distance};
+            })
+            .toList();
+
+        // Filter doctors (keep all but filter by specialty and search)
+        final filteredDoctors = doctorsWithDistance
+            .where((doctor) {
+          final appUser = doctor['user'] as AppUser;
+          
+          final matchesSpecialist =
+              _selectedSpecialist == 'All Specialists' ||
+              appUser.specialization == _selectedSpecialist;
+
+          final doctorName = appUser.name.toLowerCase();
+          final specialization = (appUser.specialization ?? '').toLowerCase();
+          final clinicName = (appUser.clinicName ?? '').toLowerCase();
+          final matchesQuery =
+              query.isEmpty ||
+              doctorName.contains(query) ||
+              specialization.contains(query) ||
+              clinicName.contains(query);
+
+          // Keep all doctors - don't filter by proximity
+          return matchesSpecialist && matchesQuery;
+        })
+        .toList();
+
+        // Sort: nearby doctors first if proximity is enabled
+        if (_sortByProximity && _userPosition != null) {
+          filteredDoctors.sort((a, b) {
+            final distA = (a['distance'] as double?) ?? double.infinity;
+            final distB = (b['distance'] as double?) ?? double.infinity;
+            return distA.compareTo(distB);
+          });
+        }
+
+        if (filteredDoctors.isEmpty) {
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -983,7 +1288,15 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                 Icon(Icons.search_off, size: 80, color: Colors.grey[400]),
                 const SizedBox(height: 16),
                 Text(
-                  languageProvider.t('No doctors found for\n$_selectedSpecialist', '$_selectedSpecialist کے لیے کوئی ڈاکٹر نہیں ملا'),
+                  query.isNotEmpty
+                      ? languageProvider.t(
+                          'No doctors found for "$query"',
+                          '"$query" کے لیے کوئی ڈاکٹر نہیں ملا',
+                        )
+                      : languageProvider.t(
+                          'No doctors found for\n$_selectedSpecialist',
+                          '$_selectedSpecialist کے لیے کوئی ڈاکٹر نہیں ملا',
+                        ),
                   style: TextStyle(
                     fontSize: 16,
                     color: Colors.grey[600],
@@ -1003,18 +1316,21 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
             crossAxisCount: 2,
             crossAxisSpacing: 16,
             mainAxisSpacing: 16,
-            mainAxisExtent: 400,
+            mainAxisExtent: 470,
           ),
-          itemCount: doctors.length,
+          itemCount: filteredDoctors.length,
           itemBuilder: (context, index) {
-            return _buildDoctorCard(doctors[index]);
+            return _buildDoctorCard(
+              filteredDoctors[index]['user'] as AppUser,
+              filteredDoctors[index]['distance'] as double?,
+            );
           },
         );
       },
     );
   }
 
-  Widget _buildDoctorCard(AppUser doctor) {
+  Widget _buildDoctorCard(AppUser doctor, double? distance) {
     final availableDays = doctor.availableDays ?? [];
     final availableSlots = doctor.availableSlots ?? [];
 
@@ -1036,9 +1352,39 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
             ),
           ],
         ),
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
         child: Column(
           children: [
+            // Distance badge at the top right
+            if (distance != null)
+              Align(
+                alignment: Alignment.topRight,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [primaryDark.withOpacity(0.8), primaryMedium.withOpacity(0.8)],
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.location_on, size: 12, color: Colors.white),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${distance.toStringAsFixed(1)} km',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 8),
             Container(
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
@@ -1054,15 +1400,15 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                 ],
               ),
               child: CircleAvatar(
-                radius: 45,
+                radius: 42,
                 backgroundColor: Colors.transparent,
                 backgroundImage: doctor.imageUrl.isNotEmpty ? NetworkImage(doctor.imageUrl) : null,
                 child: doctor.imageUrl.isEmpty
-                    ? Icon(Icons.person, color: primaryDark, size: 45)
+                    ? Icon(Icons.person, color: primaryDark, size: 42)
                     : null,
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
             Text(
               doctor.name,
               style: TextStyle(
@@ -1074,7 +1420,7 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Text(
               doctor.specialization ?? 'Veterinarian',
               style: TextStyle(
@@ -1117,29 +1463,33 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                 fontWeight: FontWeight.w500,
               ),
               textAlign: TextAlign.center,
-              maxLines: 2,
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: primaryLight.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
+              
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.calendar_today, size: 14, color: primaryDark),
                   const SizedBox(width: 1),
-                  Text(
-                    '${availableDays.length} days',
-                    style: TextStyle(
-                      color: primaryDark,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                 Expanded(
+      child: Text(
+        '${availableDays.length} days',
+        style: TextStyle(
+          color: primaryDark,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+        overflow: TextOverflow.ellipsis, // safe fallback
+      ),
+    ),
                   const SizedBox(width: 12),
                   Icon(Icons.access_time, size: 14, color: primaryDark),
                   const SizedBox(width: 4),
@@ -1154,18 +1504,205 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                 ],
               ),
             ),
-            const Spacer(),
+            const SizedBox(height: 12),
+            // 🔥 Real-Time Doctor Rating Display (Streamed from Firestore)
+            StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('consultation_ratings')
+                  .where('doctorId', isEqualTo: doctor.id)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                // Debug logging
+                if (snapshot.hasError) {
+                  print('Rating Stream Error: ${snapshot.error}');
+                }
+                if (snapshot.hasData) {
+                  print('Doctor ${doctor.id} has ${snapshot.data!.docs.length} ratings');
+                }
+                
+                // Handle errors
+                if (snapshot.hasError) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.red.withOpacity(0.1), Colors.red.withOpacity(0.05)],
+                      ),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.red.withOpacity(0.3), width: 1.5),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.error_outline, size: 16, color: Colors.red[600]),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            'Error loading',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 12, color: Colors.red[600], fontWeight: FontWeight.w500),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                
+                // Handle loading state
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.grey.withOpacity(0.1), Colors.grey.withOpacity(0.05)],
+                      ),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.grey.withOpacity(0.3), width: 1.5),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            valueColor: AlwaysStoppedAnimation(Colors.grey[500]),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            'Loading...',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 12, color: Colors.grey[600], fontWeight: FontWeight.w500),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                
+                double rating = 0.0;
+                final hasData = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+                
+                if (hasData) {
+                  double total = 0.0;
+                  int count = 0;
+                  for (var doc in snapshot.data!.docs) {
+                    final doctorRating = (doc['doctorRating'] as num?)?.toDouble() ?? 0.0;
+                    if (doctorRating > 0) {
+                      total += doctorRating;
+                      count++;
+                    }
+                  }
+                  if (count > 0) {
+                    rating = total / count;
+                  }
+                }
+                
+                final hasRating = hasData && rating > 0.0;
+                
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: hasRating
+                          ? [
+                              const Color(0xFFFFB81C).withOpacity(0.15),
+                              const Color(0xFFFFC107).withOpacity(0.08),
+                            ]
+                          : [
+                              Colors.grey.withOpacity(0.1),
+                              Colors.grey.withOpacity(0.05),
+                            ],
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: hasRating
+                          ? const Color(0xFFFFB81C).withOpacity(0.5)
+                          : Colors.grey.withOpacity(0.3),
+                      width: 1.5,
+                    ),
+                  ),
+                  child: hasRating
+                      ? Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Flexible(
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(
+                                  children: [
+                                    ...List.generate(
+                                      5,
+                                      (index) => Padding(
+                                        padding: const EdgeInsets.only(right: 2),
+                                        child: Icon(
+                                          index < rating.toInt()
+                                              ? Icons.star_rounded
+                                              : (index < rating && rating % 1 != 0)
+                                                  ? Icons.star_half_rounded
+                                                  : Icons.star_outline_rounded,
+                                          size: 14,
+                                          color: const Color(0xFFFFB81C),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      '${rating.toStringAsFixed(1)}',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFFFFB81C),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.star_outline_rounded,
+                              size: 18,
+                              color: Colors.grey[500],
+                            ),
+                            const SizedBox(width: 8),
+                            Flexible(
+                           child: Text(
+                              'No ratings yet',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey[600],
+                              ),
+                               overflow: TextOverflow.ellipsis,
+                            ),
+                            ),
+                          ],
+                        ),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(15),
+                borderRadius: BorderRadius.circular(16),
                 gradient: LinearGradient(
                   colors: [primaryDark, primaryMedium],
                 ),
                 boxShadow: [
                   BoxShadow(
                     color: primaryDark.withOpacity(0.3),
-                    blurRadius: 8,
-                    offset: const Offset(0, 4),
+                    blurRadius: 10,
+                    offset: const Offset(0, 5),
                   ),
                 ],
               ),
@@ -1192,9 +1729,9 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                   backgroundColor: Colors.transparent,
                   foregroundColor: Colors.white,
                   elevation: 0,
-                  minimumSize: const Size(double.infinity, 42),
+                  minimumSize: const Size(double.infinity, 46),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(15),
+                    borderRadius: BorderRadius.circular(16),
                   ),
                 ),
                 child: const Text(
@@ -1202,7 +1739,7 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 15,
-                    letterSpacing: 0.3,
+                    letterSpacing: 0.5,
                   ),
                 ),
               ),
@@ -1324,6 +1861,94 @@ class _AppointmentDashboardPageState extends State<AppointmentDashboardPage> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
+                            ),
+                            // 🔥 Real-Time Doctor Rating Display in Bottom Sheet
+                            const SizedBox(height: 8),
+                            StreamBuilder<QuerySnapshot>(
+                              stream: FirebaseFirestore.instance
+                                  .collection('consultation_ratings')
+                                  .where('doctorId', isEqualTo: doctor.id)
+                                  .snapshots(),
+                              builder: (context, snapshot) {
+                                if (snapshot.hasError) {
+                                  return const SizedBox.shrink();
+                                }
+                                
+                                if (snapshot.connectionState == ConnectionState.waiting) {
+                                  return const SizedBox.shrink();
+                                }
+                                
+                                double rating = 0.0;
+                                final hasData = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+                                
+                                if (hasData) {
+                                  double total = 0.0;
+                                  int count = 0;
+                                  for (var doc in snapshot.data!.docs) {
+                                    final doctorRating = (doc['doctorRating'] as num?)?.toDouble() ?? 0.0;
+                                    if (doctorRating > 0) {
+                                      total += doctorRating;
+                                      count++;
+                                    }
+                                  }
+                                  if (count > 0) {
+                                    rating = total / count;
+                                  }
+                                }
+                                
+                                if (!hasData || rating == 0.0) {
+                                  return const SizedBox.shrink();
+                                }
+                                
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      colors: [
+                                        const Color(0xFFFFB81C).withOpacity(0.15),
+                                        const Color(0xFFFFC107).withOpacity(0.08),
+                                      ],
+                                    ),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: const Color(0xFFFFB81C).withOpacity(0.4),
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      ...List.generate(
+                                        5,
+                                        (index) => Padding(
+                                          padding: const EdgeInsets.only(right: 2),
+                                          child: Icon(
+                                            index < rating.toInt()
+                                                ? Icons.star_rounded
+                                                : (index < rating && rating % 1 != 0)
+                                                    ? Icons.star_half_rounded
+                                                    : Icons.star_outline_rounded,
+                                            size: 14,
+                                            color: const Color(0xFFFFB81C),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        '${rating.toStringAsFixed(1)}',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFFFFB81C),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
                             ),
                           ],
                         ),

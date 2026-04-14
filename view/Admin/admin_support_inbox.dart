@@ -37,6 +37,35 @@ class _AdminSupportInboxPageState extends State<AdminSupportInboxPage> {
             .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
+            final errorCode = snapshot.error.toString();
+            if (errorCode.contains('PERMISSION_DENIED')) {
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.lock_outline, size: 80, color: Colors.red[300]),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Admin Access Required',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.red,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Text(
+                        'You do not have permission to view support messages.\n\nThis feature is only available to administrators.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
             return Center(
               child: Text('Error: ${snapshot.error}'),
             );
@@ -385,6 +414,35 @@ class _AdminChatPageState extends State<AdminChatPage> {
           .snapshots(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
+          final errorCode = snapshot.error.toString();
+          if (errorCode.contains('PERMISSION_DENIED')) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.lock_outline, size: 80, color: Colors.red[300]),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Access Denied',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.red,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      'You do not have permission to view this conversation.\n\nPlease contact your system administrator.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
           return Center(child: Text('Error: ${snapshot.error}'));
         }
 
@@ -618,12 +676,19 @@ class _AdminChatPageState extends State<AdminChatPage> {
       
     } catch (e) {
       print('Error sending message: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to send message. Please try again.'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        final errorMessage = e.toString().contains('PERMISSION_DENIED')
+            ? 'Permission denied. Admin privileges may have been revoked.'
+            : 'Failed to send message. Please try again.';
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     }
   }
 

@@ -15,6 +15,9 @@ import 'package:flutter_application_1/services/Appointment%20Service/appointment
 import 'package:flutter_application_1/services/payment_service/stripe_payment_service.dart';
 import 'package:flutter_application_1/services/notification%20service/notification_service.dart';
 import 'package:intl/intl.dart';
+import 'Notifications.dart';
+import 'Profile.dart';
+import 'UserSettingsPage.dart';
 import '../../provider/language_provider.dart';
 import '../../config/payment_config.dart';
 import '../../widgets/payment_method_selector.dart';
@@ -62,6 +65,8 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
   // Doctor Details  
   Doctor? doctor;
   double consultationFee = 0.0;
+  double doctorRating = 0.0;  // Doctor's average rating
+  int ratingCount = 0;  // Number of ratings
 
   // Payment Screenshot
   File? paymentScreenshot;
@@ -102,9 +107,45 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
               ? doctor!.onlineConsultationFee
               : doctor!.homeVisitFee;
         });
+        
+        // Fetch doctor's rating
+        await _fetchDoctorRating();
       }
     } catch (e) {
       print('Error fetching doctor details: $e');
+    }
+  }
+
+  Future<void> _fetchDoctorRating() async {
+    try {
+      // Query all ratings where doctorId matches
+      final snapshot = await FirebaseFirestore.instance
+          .collection('consultation_ratings')
+          .where('doctorId', isEqualTo: widget.doctorId)
+          .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        double totalRating = 0;
+        int count = 0;
+        
+        for (var doc in snapshot.docs) {
+          final rating = doc['ratingValue'] as num?;
+          if (rating != null) {
+            totalRating += rating.toDouble();
+            count++;
+          }
+        }
+        
+        if (count > 0) {
+          setState(() {
+            doctorRating = totalRating / count;
+            ratingCount = count;
+          });
+          print('[AppoiintmentBooking] Doctor $widget.doctorId rating: $doctorRating ($count ratings)');
+        }
+      }
+    } catch (e) {
+      print('Error fetching doctor rating: $e');
     }
   }
 
@@ -419,6 +460,39 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
                     "${doctor!.specialization ?? 'Specialist'}",
                     style: const TextStyle(fontSize: 12, color: Colors.black45),
                   ),
+                // Doctor rating display
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    // Show stars
+                    ...List.generate(5, (index) {
+                      final filledStars = doctorRating.toInt();
+                      final isHalfStar = doctorRating - filledStars > 0.5 && index == filledStars;
+                      
+                      return Icon(
+                        index < filledStars
+                            ? Icons.star
+                            : isHalfStar
+                                ? Icons.star_half
+                                : Icons.star_border,
+                        color: Colors.amber,
+                        size: 16,
+                      );
+                    }),
+                    const SizedBox(width: 6),
+                    // Rating number and count
+                    Text(
+                      doctorRating > 0
+                          ? '${doctorRating.toStringAsFixed(1)} ($ratingCount)'
+                          : 'No ratings',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           )
@@ -606,20 +680,148 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
       spacing: 10,
       runSpacing: 10,
       children: timeSlots.map((slot) {
-        final isSelected = selectedSlot == slot;
-        return ChoiceChip(
-          label: Text(slot),
-          selected: isSelected,
-          selectedColor: darkTeal,
-          backgroundColor: Colors.grey[200],
-          labelStyle: TextStyle(
-            color: isSelected ? Colors.white : Colors.black,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-          ),
-          onSelected: (_) => setState(() => selectedSlot = slot),
+        return FutureBuilder<Map<String, dynamic>>(
+          // Add key with date to force rebuild when date changes
+          key: ValueKey('${slot}_${selectedDate.toString()}'),
+          future: _getSlotStatus(slot),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) {
+              return const Chip(label: Text('Loading...'));
+            }
+
+            final slotStatus = snapshot.data!;
+            final isBooked = slotStatus['isBooked'] as bool;
+            final isTimePassed = slotStatus['isTimePassed'] as bool;
+            final canSelect = !isBooked && !isTimePassed;
+            
+            late String statusLabel;
+            late Color statusColor;
+            late IconData statusIcon;
+
+            if (isTimePassed) {
+              statusLabel = 'یہ وقت گزر گیا ہے';
+              statusColor = Colors.red;
+              statusIcon = Icons.schedule;
+            } else if (isBooked) {
+              statusLabel = 'بک شدہ';
+              statusColor = Colors.orange;
+              statusIcon = Icons.block;
+            } else {
+              statusLabel = slot;
+              statusColor = darkTeal;
+              statusIcon = Icons.check;
+            }
+
+            return Tooltip(
+              message: isTimePassed ? 'This slot time has passed' : 
+                       isBooked ? 'This slot is already booked' : 
+                       'Available slot',
+              child: ChoiceChip(
+                label: isBooked || isTimePassed
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(statusIcon, size: 14),
+                          const SizedBox(width: 4),
+                          Text(statusLabel, style: const TextStyle(fontSize: 11)),
+                        ],
+                      )
+                    : Text(slot),
+                selected: selectedSlot == slot && canSelect,
+                selectedColor: canSelect ? darkTeal : Colors.grey.shade300,
+                backgroundColor: isTimePassed
+                    ? Colors.red.shade50
+                    : isBooked
+                        ? Colors.orange.shade50
+                        : Colors.white,
+                labelStyle: TextStyle(
+                  color: canSelect && selectedSlot == slot
+                      ? Colors.white
+                      : isTimePassed
+                          ? Colors.red
+                          : isBooked
+                              ? Colors.orange
+                              : Colors.black,
+                  fontWeight: selectedSlot == slot ? FontWeight.bold : FontWeight.normal,
+                ),
+                onSelected: canSelect ? (_) => setState(() => selectedSlot = slot) : null,
+              ),
+            );
+          },
         );
       }).toList(),
     );
+  }
+
+  /// Check if a slot is booked or if time has passed
+  Future<Map<String, dynamic>> _getSlotStatus(String slot) async {
+    try {
+      // Check if time has passed (only for today)
+      final now = DateTime.now();
+      final isToday = selectedDate.year == now.year &&
+          selectedDate.month == now.month &&
+          selectedDate.day == now.day;
+
+      bool isTimePassed = false;
+      if (isToday) {
+        // Parse slot time - format is "09:00 AM" or "02:00 PM"
+        try {
+          // Remove AM/PM and get the time part
+          final timeWithoutPeriod = slot.replaceAll('AM', '').replaceAll('PM', '').trim();
+          final timeParts = timeWithoutPeriod.split(':');
+          
+          if (timeParts.length == 2) {
+            var hour = int.parse(timeParts[0]);
+            final minute = int.parse(timeParts[1]);
+            
+            // Convert to 24-hour format
+            if (slot.contains('PM') && hour != 12) {
+              hour += 12;
+            } else if (slot.contains('AM') && hour == 12) {
+              hour = 0;
+            }
+            
+            final slotTime = DateTime(now.year, now.month, now.day, hour, minute);
+            isTimePassed = now.isAfter(slotTime);
+          }
+        } catch (e) {
+          print('[AppoiintmentBooking] Error parsing time: $e');
+        }
+      }
+
+      // Check if slot is already booked
+      final snapshot = await FirebaseFirestore.instance
+          .collection('appointments')
+          .where('doctorId', isEqualTo: doctorId)
+          .where('time', isEqualTo: slot)
+          .where('date', isEqualTo: Timestamp.fromDate(DateTime(
+            selectedDate.year,
+            selectedDate.month,
+            selectedDate.day,
+          )))
+          .get();
+
+      // Check if any non-declined appointments exist
+      bool isBooked = false;
+      for (var doc in snapshot.docs) {
+        final status = doc['status'] as String? ?? '';
+        if (status.toLowerCase() != 'declined' && status.toLowerCase() != 'cancelled') {
+          isBooked = true;
+          break;
+        }
+      }
+
+      return {
+        'isBooked': isBooked,
+        'isTimePassed': isTimePassed,
+      };
+    } catch (e) {
+      print('[AppoiintmentBooking] Error in _getSlotStatus: $e');
+      return {
+        'isBooked': false,
+        'isTimePassed': false,
+      };
+    }
   }
 
   Widget _problemTextField() {
@@ -1654,6 +1856,10 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
   List<String> timeSlots = [];
   List<String> availableDays = [];
   
+  // Slot status caching (to avoid repeated Firestore queries)
+  final Map<String, String> _slotStatusCache = {}; // key: "YYYY-MM-DD:HH:MM", value: "available"|"pending"|"booked"
+  bool _slotsLoading = false;
+  
   // Payment-related
   double consultationFee = 0.0;
   File? paymentScreenshot;
@@ -1705,6 +1911,8 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
       availableDays = widget.doctor.availableDays ?? [];
       selectedDate = _findFirstAvailableDate();
       timeSlots = _getSlotsForDay(selectedDate);
+      // Load slot statuses for initial date (FIX)
+      _loadSlotStatuses();
     } catch (e) {
       print('Error loading doctor availability: $e');
       availableDays = [];
@@ -1789,7 +1997,86 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
       return false;
     }
   }
+
+  /// ============= SLOT STATUS CHECKING (FIX) =============
+  /// Returns slot status: "available", "pending", or "booked"
+  Future<String> _getSlotStatus(DateTime date, String time) async {
+    try {
+      final dateStr = DateFormat('yyyy-MM-dd').format(date);
+      final cacheKey = "$dateStr:$time";
+      
+      // Return cached value if available
+      if (_slotStatusCache.containsKey(cacheKey)) {
+        return _slotStatusCache[cacheKey]!;
+      }
+
+      // Query for appointments with this doctor, date, and time
+      final query = await FirebaseFirestore.instance
+          .collection('appointments')
+          .where('doctorId', isEqualTo: widget.doctor.id)
+          .where('date', isEqualTo: Timestamp.fromDate(
+            DateTime(date.year, date.month, date.day)
+          ))
+          .where('time', isEqualTo: time)
+          .where('status', whereIn: ['pending', 'approved'])
+          .limit(1)
+          .get();
+
+      String status = 'available';
+      
+      if (query.docs.isNotEmpty) {
+        final appointmentStatus = query.docs.first['status'] as String?;
+        if (appointmentStatus == 'pending') {
+          status = 'pending';
+        } else if (appointmentStatus == 'approved') {
+          status = 'booked';
+        }
+      }
+
+      // Cache the result
+      _slotStatusCache[cacheKey] = status;
+      return status;
+    } catch (e) {
+      print('❌ Error checking slot status: $e');
+      return 'available'; // Default to available on error
+    }
+  }
+
+  /// Load all slot statuses for the selected date (call when date changes)
+  Future<void> _loadSlotStatuses() async {
+    if (!mounted) return;
+    
+    setState(() => _slotsLoading = true);
+
+    try {
+      // Check all slots for the selected date in parallel
+      final futures = timeSlots.map((slot) => _getSlotStatus(selectedDate, slot));
+      await Future.wait(futures);
+      
+      if (mounted) {
+        setState(() => _slotsLoading = false);
+      }
+    } catch (e) {
+      print('❌ Error loading slot statuses: $e');
+      if (mounted) {
+        setState(() => _slotsLoading = false);
+      }
+    }
+  }
+
+  /// Check if slot can be booked (prevents double booking)
+  Future<bool> _canBookSlot(DateTime date, String time) async {
+    try {
+      final status = await _getSlotStatus(date, time);
+      return status == 'available';
+    } catch (e) {
+      print('❌ Error checking if slot can be booked: $e');
+      return false;
+    }
+  }
   
+  /// ======================================================
+
   /// ------------------ INITIALIZE GOOGLE MAP ------------------
   void _initializeMap() {
     try {
@@ -1964,6 +2251,25 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
       print('   Date: ${DateFormat('yyyy-MM-dd').format(selectedDate)}');
       print('   Time: $selectedSlot');
       print('   Fee: Rs $consultationFee');
+
+      // ============= DOUBLE BOOKING CHECK (FIX) =============
+      print('\n🔍 Step 0: Checking if slot is available...');
+      final canBook = await _canBookSlot(selectedDate, selectedSlot);
+      if (!canBook) {
+        setState(() => isLoading = false);
+        _showErrorDialog(
+          languageProvider.t(
+            'This time slot is no longer available. Please select another slot.',
+            'یہ وقت کا سلاٹ اب دستیاب نہیں ہے۔ براہ کرم دوسرا سلاٹ منتخب کریں۔'
+          ),
+          languageProvider
+        );
+        // Reload slot statuses to reflect the change
+        _loadSlotStatuses();
+        return;
+      }
+      print('✅ Slot is available - proceeding with booking');
+      // ====================================================
 
       // Step 1: Upload Payment Screenshot to Supabase Storage
       // Screenshot will be stored in:
@@ -2263,51 +2569,100 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
 
   Widget _buildAppBar(LanguageProvider languageProvider) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
+          GestureDetector(
+            onTap: () => Navigator.pop(context),
+            child: Container(
+              padding: const EdgeInsets.all(9),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.white.withOpacity(0.3),
+                  width: 1,
+                ),
+              ),
+              child: const Icon(
+                Icons.arrow_back_ios_new,
+                color: Colors.white,
+                size: 20,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              languageProvider.translate('book_appointment'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+                letterSpacing: -0.5,
+                shadows: [
+                  Shadow(
+                    color: Colors.black26,
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
           Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.3),
-                      width: 1,
-                    ),
+              _buildAppBarIcon(Icons.settings_outlined, () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const UserSettingsPage(),
                   ),
-                  child: const Icon(
-                    Icons.arrow_back_ios_new,
-                    color: Colors.white,
-                    size: 20,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                languageProvider.translate('book_appointment'),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 22,
-                  letterSpacing: -0.5,
-                  shadows: [
-                    Shadow(
-                      color: Colors.black26,
-                      blurRadius: 4,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
-              ),
+                );
+              }),
+              const SizedBox(width: 6),
+              _buildAppBarIcon(Icons.notifications_outlined, () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => NotificationsPage()),
+                );
+              }),
+              const SizedBox(width: 6),
+              _buildAppBarIcon(Icons.person_outline, () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => EditProfilePage()),
+                );
+              }),
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAppBarIcon(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.2),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.3),
+            width: 1,
+          ),
+        ),
+        child: Icon(
+          icon,
+          color: Colors.white,
+          size: 20,
+        ),
       ),
     );
   }
@@ -2421,12 +2776,61 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 6),
+                // 🔥 Doctor Rating Display
+                FutureBuilder<double>(
+                  future: _getDoctorAverageRating(widget.doctor.id),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData || snapshot.data == 0.0) {
+                      return const SizedBox.shrink();
+                    }
+                    
+                    final averageRating = snapshot.data ?? 0.0;
+                    return Row(
+                      children: [
+                        Icon(Icons.star_rounded, size: 14, color: const Color(0xFFFFB81C)),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${averageRating.toStringAsFixed(1)}/5',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: const Color(0xFFFFB81C),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  // 🔥 Get Doctor's Average Rating
+  Future<double> _getDoctorAverageRating(String doctorId) async {
+    try {
+      final ratings = await FirebaseFirestore.instance
+          .collection('consultation_ratings')
+          .where('doctorId', isEqualTo: doctorId)
+          .get();
+      
+      if (ratings.docs.isEmpty) return 0.0;
+      
+      double total = 0.0;
+      for (var rating in ratings.docs) {
+        final doctorRating = (rating.data()['doctorRating'] as num?)?.toDouble() ?? 0.0;
+        total += doctorRating;
+      }
+      
+      return total / ratings.docs.length;
+    } catch (e) {
+      print('Error getting doctor rating: $e');
+      return 0.0;
+    }
   }
 
   Widget _animalCard(LanguageProvider languageProvider) {
@@ -2659,6 +3063,8 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
             selectedSlot = "";
             timeSlots = slots;
           });
+          // Load slot statuses after date change (FIX)
+          _loadSlotStatuses();
         },
       ),
     );
@@ -2692,6 +3098,22 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
       );
     }
 
+    // FIXED: Show loading indicator while loading slot statuses
+    if (_slotsLoading) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: primaryLight.withOpacity(0.3),
+            width: 1,
+          ),
+        ),
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -2714,49 +3136,108 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
         runSpacing: 10,
         children: timeSlots.map((slot) {
           final isSelected = selectedSlot == slot;
-          return InkWell(
-            onTap: () => setState(() => selectedSlot = slot),
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                gradient: isSelected
-                    ? LinearGradient(colors: [primaryDark, primaryMedium])
-                    : null,
-                color: isSelected ? null : Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isSelected ? Colors.transparent : primaryDark.withOpacity(0.3),
-                  width: 1.5,
+          final cacheKey = "${DateFormat('yyyy-MM-dd').format(selectedDate)}:$slot";
+          final slotStatus = _slotStatusCache[cacheKey] ?? 'available'; // FIXED: Get cached status
+          final isAvailable = slotStatus == 'available';
+          final isPending = slotStatus == 'pending';
+          final isBooked = slotStatus == 'booked';
+
+          // Determine colors based on slot status
+          Color statusColor = Colors.green;
+          String statusLabel = "Available";
+          if (isPending) {
+            statusColor = Colors.orange;
+            statusLabel = "Pending";
+          } else if (isBooked) {
+            statusColor = Colors.red;
+            statusLabel = "Booked";
+          }
+
+          return Tooltip(
+            message: statusLabel,
+            child: InkWell(
+              onTap: isAvailable && !isSelected ? () => setState(() => selectedSlot = slot) : null,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: isSelected && isAvailable
+                      ? LinearGradient(colors: [primaryDark, primaryMedium])
+                      : null,
+                  color: isSelected && isAvailable
+                      ? null
+                      : isAvailable
+                          ? Colors.white
+                          : statusColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isSelected && isAvailable
+                        ? Colors.transparent
+                        : isAvailable
+                            ? primaryDark.withOpacity(0.3)
+                            : statusColor.withOpacity(0.5),
+                    width: 1.5,
+                  ),
+                  boxShadow: isSelected && isAvailable
+                      ? [
+                          BoxShadow(
+                            color: primaryDark.withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ]
+                      : [],
                 ),
-                boxShadow: isSelected
-                    ? [
-                        BoxShadow(
-                          color: primaryDark.withOpacity(0.3),
-                          blurRadius: 8,
-                          offset: const Offset(0, 4),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.access_time,
+                          size: 16,
+                          color: isSelected && isAvailable
+                              ? Colors.white
+                              : primaryDark,
                         ),
-                      ]
-                    : [],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.access_time,
-                    size: 16,
-                    color: isSelected ? Colors.white : primaryDark,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    slot,
-                    style: TextStyle(
-                      color: isSelected ? Colors.white : primaryDark,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
+                        const SizedBox(width: 6),
+                        Text(
+                          slot,
+                          style: TextStyle(
+                            color: isSelected && isAvailable
+                                ? Colors.white
+                                : isAvailable
+                                    ? primaryDark
+                                    : statusColor,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                    // Status badge (FIXED)
+                    if (!isAvailable)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: statusColor.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            statusLabel,
+                            style: TextStyle(
+                              color: statusColor,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           );
@@ -3358,6 +3839,7 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
                         ),
                       ],
                     ),
+
                     child: Row(
                       children: [
                         Container(

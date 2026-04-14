@@ -1,28 +1,47 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_application_1/model/appointment_model.dart';
 import 'package:flutter_application_1/model/app_user.dart';
 import 'package:flutter_application_1/services/Appointment Service/appointment_services.dart';
 import 'package:flutter_application_1/services/firebase_authentication/auth_api.dart';
 import 'package:flutter_application_1/services/notification service/notification_service.dart';
 import 'package:flutter_application_1/services/payment_service/supabase_payment_storage.dart';
+import 'package:flutter_application_1/services/consultation_service.dart';
 import 'package:flutter_application_1/view/Doctor/UserProfilePage.dart';
 import 'package:flutter_application_1/view/User/ChatScreen.dart';
+import 'package:flutter_application_1/utils/appointment_time_parser.dart';
 
 class AppointmentApprovalPage extends StatefulWidget {
   final AppointmentModel appointment;
+  final bool readOnly;
 
-  const AppointmentApprovalPage({super.key, required this.appointment});
+  const AppointmentApprovalPage({
+    super.key,
+    required this.appointment,
+    this.readOnly = false,
+  });
 
   @override
   State<AppointmentApprovalPage> createState() =>
       _AppointmentApprovalPageState();
 }
 
+class _DeclinePayload {
+  final String reasonCode;
+  final String doctorMessage;
+
+  const _DeclinePayload({
+    required this.reasonCode,
+    required this.doctorMessage,
+  });
+}
+
 class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
     with SingleTickerProviderStateMixin {
   final AppointmentService _appointmentService = AppointmentService();
   final NotificationService _notificationService = NotificationService();
+  final ConsultationService _consultationService = ConsultationService();
   final SupabasePaymentStorage _paymentStorage = SupabasePaymentStorage();
 
   final Color primaryTeal = Color(0xFF00796B);
@@ -36,6 +55,11 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
   Map<String, dynamic>? animalData;
   bool isLoading = true;
   String? paymentImageUrl; // Signed URL for payment screenshot
+  String _currentStatus = 'pending';
+  Timestamp? _declinedAt;
+  String? _declineReason;
+  bool _isProcessingAction = false;
+  bool _isLoadingDialogVisible = false;
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -56,6 +80,36 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
       CurvedAnimation(parent: _animationController, curve: Curves.easeOut),
     );
     _fetchData();
+    // ✅ Subscribe to real-time status updates
+    _subscribeToStatusUpdates();
+  }
+
+  /// ✅ NEW: Subscribe to real-time Firestore updates
+  void _subscribeToStatusUpdates() {
+    FirebaseFirestore.instance
+        .collection('appointments')
+        .doc(widget.appointment.id)
+        .snapshots()
+        .listen((snapshot) {
+      if (snapshot.exists && mounted) {
+        final data = snapshot.data() as Map<String, dynamic>;
+        final newStatus = (data['status'] ?? 'pending').toString().toLowerCase();
+        final declinedAt = data['declinedAt'] as Timestamp?;
+        final declineReason = (data['declineReason'] ?? '').toString();
+        
+        print('[AppointmentApproval] 🔄 Real-time status update: $_currentStatus → $newStatus');
+        
+        if (newStatus != _currentStatus) {
+          setState(() {
+            _currentStatus = newStatus;
+            _declinedAt = declinedAt;
+            _declineReason = declineReason;
+          });
+        }
+      }
+    }, onError: (error) {
+      print('[AppointmentApproval] ❌ Error subscribing to status: $error');
+    });
   }
 
   @override
@@ -113,68 +167,273 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
         print('[AppointmentApproval] No payment screenshot URL available');
       }
 
+      // Always get fresh appointment status to prevent stale actions.
+      final latestAppointmentDoc = await FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(widget.appointment.id)
+          .get();
+      if (latestAppointmentDoc.exists) {
+        final latestData = latestAppointmentDoc.data()!;
+        _currentStatus = (latestData['status'] ?? widget.appointment.status)
+            .toString()
+            .toLowerCase();
+        _declinedAt = latestData['declinedAt'] as Timestamp?;
+        _declineReason = (latestData['declineReason'] ?? '').toString();
+      } else {
+        _currentStatus = widget.appointment.status.toLowerCase();
+        _declinedAt = widget.appointment.declinedAt;
+        _declineReason = (widget.appointment.declineReason ?? '').toString();
+      }
+
       print('[AppointmentApproval] Data loaded successfully');
+      if (!mounted) return;
       setState(() => isLoading = false);
       _animationController.forward();
     } catch (e) {
       print('[AppointmentApproval] Error loading data: $e');
+      if (!mounted) return;
       setState(() => isLoading = false);
-      if (mounted) {
-        _showSnackBar('Some data could not be loaded', isError: true);
-      }
+      _showSnackBar('Some data could not be loaded', isError: true);
     }
   }
 
-  Future<void> _approveAppointment() async {
-    try {
-      _showLoadingDialog('Approving appointment...');
+  bool get _isReapprovalWindowOpen {
+    if (_declinedAt == null) return false;
+    final declinedAtDate = _declinedAt!.toDate();
+    final now = DateTime.now();
+    if (now.isBefore(declinedAtDate)) return false;
+    return now.difference(declinedAtDate) <= const Duration(days: 1);
+  }
 
-      await _appointmentService.updateStatus(widget.appointment.id, 'approved');
+  bool get _canReapproveDeclined {
+    return _currentStatus == 'declined' && _isReapprovalWindowOpen;
+  }
+
+  Future<void> _approveAppointment() async {
+    if (_isProcessingAction) return;
+    if (widget.readOnly) {
+      _showSnackBar('This appointment is read-only');
+      return;
+    }
+
+    final isPendingApproval = _currentStatus == 'pending';
+    if (!isPendingApproval && !_canReapproveDeclined) {
+      _showSnackBar('This appointment is already $_currentStatus');
+      return;
+    }
+
+    var statusUpdated = false;
+    var consultationInitialized = false;
+    try {
+      if (mounted) {
+        setState(() => _isProcessingAction = true);
+      }
+      _showLoadingDialog(
+        isPendingApproval
+            ? 'Approving appointment...'
+            : 'Re-approving appointment...',
+      );
+
+      // STEP 1: Update status (critical)
+      print('[AppointmentApproval] Step 1: Updating appointment status...');
+      try {
+        await _appointmentService.updateStatus(widget.appointment.id, 'approved');
+        statusUpdated = true;
+        print('[AppointmentApproval] ✅ Status updated to approved');
+      } catch (e) {
+        print('[AppointmentApproval] ❌ Failed to update status: $e');
+        rethrow;
+      }
+      
+      // STEP 2: Calculate and set consultation times (critical)
+      print('[AppointmentApproval] Step 2: Setting up appointment for consultation...');
+      try {
+        final appointmentDate = widget.appointment.date.toDate();
+        
+        // Parse the actual slot time range to get EXACT end time (not calculated from duration)
+        // E.g., "1:00 PM - 1:10 PM" → start: 1:00 PM, end: 1:10 PM
+        final timeRange = parseAppointmentTimeRange(
+          widget.appointment.time,
+          appointmentDate: appointmentDate,
+        );
+        
+        final startTime = timeRange['start']!;
+        final endTime = timeRange['end']!;
+        
+        // Calculate actual duration from slot times (e.g., 1:00-1:10 = 10 minutes)
+        final calculatedDuration = endTime.difference(startTime).inMinutes;
+        
+        final consultationStartTime = Timestamp.fromDate(startTime);
+        final consultationEndTime = Timestamp.fromDate(endTime);
+        
+        print('[AppointmentApproval] 📝 Slot Time Range: ${widget.appointment.time}');
+        print('[AppointmentApproval] ⏰ Start: ${startTime.toIso8601String()}');
+        print('[AppointmentApproval] ⏰ End:   ${endTime.toIso8601String()}');
+        print('[AppointmentApproval] ⏱️  Duration: ${calculatedDuration} minutes');
+        
+        // Update appointment with chat system fields
+        // IMPORTANT: DO NOT set consultationStartTime here!
+        // It will be set by the reminder scheduler when appointment actually starts
+        await FirebaseFirestore.instance
+            .collection('appointments')
+            .doc(widget.appointment.id)
+            .set({
+          'reapprovedAt': FieldValue.serverTimestamp(),
+          'reapprovedFromDecline': !isPendingApproval,
+          'declineReason': FieldValue.delete(),
+          'declineReasonText': FieldValue.delete(),
+          'declinedAt': FieldValue.delete(),
+          'chatStatus': 'disabled', // Chat disabled until appointment starts
+          // consultationStartTime will be set by scheduler when time arrives
+          'consultationEndTime': consultationEndTime, // Use ACTUAL slot end time
+          'slotDuration': calculatedDuration, // Store calculated duration from slot
+        }, SetOptions(merge: true));
+        print('[AppointmentApproval] ✅ Appointment ready for consultation (${calculatedDuration}m slot)');
+      } catch (e) {
+        print('[AppointmentApproval] ⚠️ Failed to set appointment details: $e');
+        // Continue - this is non-critical for UI flow
+      }
+
+      // STEP 3: Handle refunds for re-approvals (non-critical)
+      if (!isPendingApproval) {
+        print('[AppointmentApproval] Step 3: Cancelling pending refunds...');
+        try {
+          final pendingRefunds = await FirebaseFirestore.instance
+              .collection('refunds')
+              .where('appointmentId', isEqualTo: widget.appointment.id)
+              .where('status', isEqualTo: 'pending')
+              .get();
+
+          for (final refundDoc in pendingRefunds.docs) {
+            await refundDoc.reference.set({
+              'status': 'cancelled',
+              'cancelledAt': FieldValue.serverTimestamp(),
+              'cancelReason': 'doctor_reapproved_within_24h',
+            }, SetOptions(merge: true));
+          }
+          print('[AppointmentApproval] ✅ Pending refunds cancelled');
+        } catch (e) {
+          print('[AppointmentApproval] ⚠️ Refund cancellation failed: $e');
+        }
+      }
+
+      // STEP 4: Initialize consultation system (non-critical)
+      print('[AppointmentApproval] Step 4: Initializing consultation system...');
+      if (user != null) {
+        try {
+          // Send approval confirmation message from doctor
+          final messageId = await _consultationService.sendApprovalConfirmationMessage(
+            appointment: widget.appointment,
+            user: user!,
+          );
+          print('[AppointmentApproval] ✅ Approval message sent: $messageId');
+
+          // Update chat permissions: user can read, doctor can send
+          await _consultationService.updatePermissionOnApproval(
+            appointmentId: widget.appointment.id,
+            userId: widget.appointment.userId,
+            doctorId: widget.appointment.doctorId,
+          );
+          print('[AppointmentApproval] ✅ Chat permissions updated');
+
+          if (messageId != null) {
+            // Store the message ID in appointment for tracking
+            await FirebaseFirestore.instance
+                .collection('appointments')
+                .doc(widget.appointment.id)
+                .update({
+              'autoConfirmationMessageId': messageId,
+            });
+          }
+
+          consultationInitialized = true;
+          print('[AppointmentApproval] ✅ Consultation system fully initialized');
+        } catch (e) {
+          print('[AppointmentApproval] ⚠️ Consultation system init failed: $e');
+          // Don't throw - core approval is done
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _currentStatus = 'approved';
+          _declinedAt = null;
+          _declineReason = null;
+        });
+      }
 
       final dateTime = widget.appointment.date.toDate();
       final formattedDate =
           "${_getDayName(dateTime.weekday)}, ${_getMonthName(dateTime.month)} ${dateTime.day}";
       final appointmentTimeStr =
           "$formattedDate at ${widget.appointment.time}";
+        final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+        final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
 
-      await _notificationService.sendNotification(
-        receiverId: widget.appointment.userId,
-        title: '✅ Appointment Approved!',
-        message:
-            'Dr. ${doctor?.name ?? "Your doctor"} has approved your appointment for ${animalData?['name'] ?? widget.appointment.animalName} on $appointmentTimeStr.',
-        appointmentId: widget.appointment.id,
-        type: 'appointment_approved',
-      );
-
-      Navigator.pop(context); // Close loading dialog
-
-      if (user != null) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ChatScreen(
-              receiverId: widget.appointment.userId,
-              receiverName: user!.name,
-              receiverImage: user!.imageUrl,
-              isOnline: true,
-            ),
-          ),
+      // STEP 5: Send notification to user (non-critical)
+      print('[AppointmentApproval] Step 5: Sending user notification...');
+      try {
+        await _notificationService.sendNotification(
+          receiverId: widget.appointment.userId,
+          title: isPendingApproval
+              ? '✅ Appointment Approved!'
+              : '✅ Appointment Re-Approved!',
+          message:
+              isPendingApproval
+              ? 'Dr. ${doctor?.name ?? "Your doctor"} has approved your appointment for ${animalData?['name'] ?? widget.appointment.animalName}.\nAppointment On: $appointmentTimeStr\nBooked On: $bookedOn'
+              : 'Dr. ${doctor?.name ?? "Your doctor"} has re-approved your appointment for ${animalData?['name'] ?? widget.appointment.animalName}.\nAppointment On: $appointmentTimeStr\nBooked On: $bookedOn',
+          appointmentId: widget.appointment.id,
+          type: isPendingApproval ? 'appointment_approved' : 'appointment_reapproved',
         );
-      } else {
-        Navigator.pop(context);
-        if (mounted) {
-          _showSnackBar('Appointment approved successfully!');
+        print('[AppointmentApproval] ✅ User notification sent');
+      } catch (e) {
+        print('[AppointmentApproval] ⚠️ Notification failed: $e');
+      }
+
+      if (!mounted) return;
+
+      _closeLoadingDialogIfVisible();
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            receiverId: widget.appointment.userId,
+            receiverName: user!.name,
+            receiverImage: user!.imageUrl ?? '',
+            isOnline: true,
+            appointmentId: widget.appointment.id,
+            animalName: widget.appointment.animalName,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        _closeLoadingDialogIfVisible();
+      }
+      if (mounted) {
+        if (statusUpdated) {
+          _showSnackBar('Appointment approved successfully. Some follow-up actions may have failed.');
+        } else {
+          _showSnackBar('Error approving appointment', isError: true);
         }
       }
-    } catch (e) {
-      Navigator.pop(context); // Close loading dialog
+    } finally {
       if (mounted) {
-        _showSnackBar('Error approving appointment', isError: true);
+        setState(() => _isProcessingAction = false);
       }
     }
   }
 
   Future<void> _declineAppointment() async {
+    if (_isProcessingAction) return;
+    if (widget.readOnly || _currentStatus != 'pending') {
+      _showSnackBar('This appointment is already $_currentStatus');
+      return;
+    }
+
     // Step 1: Show decline reason selection
     final declineReason = await showDialog<String>(
       context: context,
@@ -252,26 +511,50 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
 
     if (declineReason == null) return;
 
+    final doctorMessage = await _showDoctorDeclineMessageDialog(declineReason);
+    if (doctorMessage == null) return;
+
+    final declinePayload = _DeclinePayload(
+      reasonCode: declineReason,
+      doctorMessage: doctorMessage,
+    );
+
     // Step 2: Confirm with refund info
-    final confirmed = await _showDeclineConfirmDialog(declineReason);
+    final confirmed = await _showDeclineConfirmDialog(declinePayload);
     if (!confirmed) return;
 
     // Step 3: Process decline
     try {
+      if (mounted) {
+        setState(() => _isProcessingAction = true);
+      }
       _showLoadingDialog('Processing decline...');
 
-      final bool needsRefund = declineReason != 'fake_screenshot';
-      final String reasonText = _getDeclineMessage(declineReason);
+      final bool needsRefund = declinePayload.reasonCode != 'fake_screenshot';
+      final String reasonText = _getDeclineMessage(declinePayload.reasonCode);
+      final String completeReasonText = _buildProfessionalDeclineReason(
+        reasonText,
+        declinePayload.doctorMessage,
+      );
+      final appointmentOn =
+          '${_formatTimelineDate(widget.appointment.date.toDate().toLocal())} at ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+      final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+      final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
 
       await _appointmentService.updateStatus(widget.appointment.id, 'declined');
+      _currentStatus = 'declined';
 
       // Store decline details
       await FirebaseFirestore.instance
           .collection('appointments')
           .doc(widget.appointment.id)
           .update({
-        'declineReason': declineReason,
-        'declineReasonText': reasonText,
+        'declineReason': declinePayload.reasonCode,
+        'declineReasonText': completeReasonText,
+        'doctorDeclineMessage': declinePayload.doctorMessage,
+        'declineCategoryText': reasonText,
         'declinedAt': Timestamp.now(),
         'refundRequired': needsRefund,
       });
@@ -285,8 +568,9 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
           'amount': widget.appointment.paymentAmount,
           'paymentMethod': 'manual', // JazzCash/EasyPaisa
           'status': 'pending',
-          'reason': declineReason,
-          'reasonText': reasonText,
+          'reason': declinePayload.reasonCode,
+          'reasonText': completeReasonText,
+          'doctorDeclineMessage': declinePayload.doctorMessage,
           'createdAt': Timestamp.now(),
           'processedAt': null,
         });
@@ -294,40 +578,152 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
         print('[Decline] ✅ Refund record created for Rs. ${widget.appointment.paymentAmount}');
 
         // Notify admin
-        await _notifyAdminForRefund(reasonText);
+        await _notifyAdminForRefund(
+          reasonText: reasonText,
+          doctorMessage: declinePayload.doctorMessage,
+          needsRefund: true,
+        );
 
         // Notify user about refund
         await _notificationService.sendNotification(
           receiverId: widget.appointment.userId,
           title: '💰 Refund Initiated',
           message:
-              'Your appointment has been declined. Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} refund is being processed (24-48 hours).',
+              'Your appointment has been declined.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nReason: $reasonText\nDoctor note: ${declinePayload.doctorMessage}\nRefund amount: Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} (processing time 24-48 hours).',
           appointmentId: widget.appointment.id,
           type: 'refund_initiated',
         );
       } else {
+        await _notifyAdminForRefund(
+          reasonText: reasonText,
+          doctorMessage: declinePayload.doctorMessage,
+          needsRefund: false,
+        );
+
         await _notificationService.sendNotification(
           receiverId: widget.appointment.userId,
           title: '❌ Appointment Declined',
-          message: 'Appointment declined. Reason: $reasonText. No refund due to invalid payment.',
+          message:
+              'Your appointment has been declined.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nReason: $reasonText\nDoctor note: ${declinePayload.doctorMessage}\nNo refund issued due to invalid payment proof.',
           appointmentId: widget.appointment.id,
           type: 'appointment_declined',
         );
       }
 
+      if (!mounted) return;
+
       Navigator.pop(context); // Close loading
       Navigator.pop(context); // Go back
       if (mounted) {
         _showSnackBar(
-          needsRefund ? 'Declined. Refund will be processed.' : 'Declined. No refund issued.',
+          needsRefund
+              ? 'Declined with detailed message. Refund will be processed.'
+              : 'Declined with detailed message. No refund issued.',
         );
       }
     } catch (e) {
-      Navigator.pop(context);
+      if (mounted) {
+        Navigator.pop(context);
+      }
       if (mounted) {
         _showSnackBar('Error declining appointment', isError: true);
       }
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessingAction = false);
+      }
     }
+  }
+
+  Future<String?> _showDoctorDeclineMessageDialog(String reasonCode) async {
+    final messageController = TextEditingController();
+    final reasonText = _getDeclineMessage(reasonCode);
+    String? validationError;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Text('Add Professional Message'),
+              content: SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(dialogContext).size.height * 0.55,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Reason: $reasonText',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: darkGrey,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Write a clear message for user and admin (minimum 10 characters).',
+                        style: TextStyle(fontSize: 13, color: Colors.black54),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: messageController,
+                        maxLines: 4,
+                        maxLength: 280,
+                        textInputAction: TextInputAction.done,
+                        onChanged: (_) {
+                          if (validationError != null) {
+                            setDialogState(() => validationError = null);
+                          }
+                        },
+                        decoration: InputDecoration(
+                          hintText: 'Example: Screenshot did not match transaction details. Please rebook with valid proof.',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: primaryTeal, width: 1.6),
+                          ),
+                          errorText: validationError,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final message = messageController.text.trim();
+                    if (message.length < 10) {
+                      setDialogState(() {
+                        validationError =
+                            'Please enter at least 10 characters for professional explanation.';
+                      });
+                      return;
+                    }
+                    Navigator.pop(dialogContext, message);
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: primaryTeal),
+                  child: const Text('Continue'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    return result;
   }
 
   Widget _buildDeclineOption({
@@ -391,9 +787,9 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
     );
   }
 
-  Future<bool> _showDeclineConfirmDialog(String reason) async {
-    final bool needsRefund = reason != 'fake_screenshot';
-    final String reasonText = _getDeclineMessage(reason);
+  Future<bool> _showDeclineConfirmDialog(_DeclinePayload payload) async {
+    final bool needsRefund = payload.reasonCode != 'fake_screenshot';
+    final String reasonText = _getDeclineMessage(payload.reasonCode);
 
     final result = await showDialog<bool>(
       context: context,
@@ -405,6 +801,20 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Reason: $reasonText', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.blue.withOpacity(0.45)),
+              ),
+              child: Text(
+                'Doctor note: ${payload.doctorMessage}',
+                style: const TextStyle(fontSize: 13, height: 1.4),
+              ),
+            ),
             const SizedBox(height: 12),
             if (needsRefund)
               Container(
@@ -466,6 +876,10 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
     return result ?? false;
   }
 
+  String _buildProfessionalDeclineReason(String categoryReason, String doctorMessage) {
+    return '$categoryReason. Doctor note: $doctorMessage';
+  }
+
   String _getDeclineMessage(String reason) {
     switch (reason) {
       case 'fake_screenshot':
@@ -479,8 +893,19 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
     }
   }
 
-  Future<void> _notifyAdminForRefund(String reason) async {
+  Future<void> _notifyAdminForRefund({
+    required String reasonText,
+    required String doctorMessage,
+    required bool needsRefund,
+  }) async {
     try {
+      final appointmentOn =
+          '${_formatTimelineDate(widget.appointment.date.toDate().toLocal())} at ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+      final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+      final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
+
       final adminSnapshot = await FirebaseFirestore.instance
           .collection('users')
           .where('role', isEqualTo: 'Admin')
@@ -489,11 +914,13 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
       for (var admin in adminSnapshot.docs) {
         await _notificationService.sendNotification(
           receiverId: admin.id,
-          title: '💰 Manual Refund Required',
+          title: needsRefund ? '💰 Manual Refund Required' : '🚫 Declined Without Refund',
           message:
-              'Process refund of Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} for appointment ${widget.appointment.id}. Reason: $reason',
+              needsRefund
+                  ? 'Process refund of Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} for appointment ${widget.appointment.id}.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nReason: $reasonText\nDoctor note: $doctorMessage'
+                  : 'Appointment ${widget.appointment.id} declined without refund.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nReason: $reasonText\nDoctor note: $doctorMessage',
           appointmentId: widget.appointment.id,
-          type: 'admin_refund_request',
+          type: needsRefund ? 'admin_refund_request' : 'admin_decline_notice',
         );
       }
     } catch (e) {
@@ -630,7 +1057,11 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
                           _sectionLabel("Payment Information", Icons.payment_rounded),
                           _buildPaymentScreenshotSection(),
                           const SizedBox(height: 32),
-                          _buildActionButtons(),
+                                    if (!widget.readOnly &&
+                                        (_currentStatus == 'pending' || _canReapproveDeclined))
+                            _buildActionButtons()
+                          else
+                            _buildReadOnlyActions(),
                           const SizedBox(height: 24),
                         ],
                       ),
@@ -757,6 +1188,37 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
   }
 
   Widget _buildStatusBadge() {
+    // ✅ CRITICAL: Normalize status to lowercase
+    final status = _currentStatus.toLowerCase().trim();
+    final isApproved = status == 'approved' || status == 'active';
+    final isCompleted = status == 'completed';
+    final isDeclined = status == 'declined';
+    final isPending = status == 'pending';
+    
+    print('[AppointmentApproval] 🎨 Building status badge with status: "$status"');
+    
+    final badgeColors = isApproved
+      ? [Colors.green.shade500, Colors.green.shade700]
+      : isCompleted
+        ? [Colors.blue.shade500, Colors.blue.shade700]
+        : isDeclined
+          ? [Colors.red.shade400, Colors.red.shade600]
+          : [Colors.orange.shade400, Colors.orange.shade600];
+    final badgeIcon = isApproved
+      ? Icons.check_circle_rounded
+      : isCompleted
+        ? Icons.task_alt_rounded
+        : isDeclined
+          ? Icons.cancel_rounded
+          : Icons.schedule_rounded;
+    final badgeText = isApproved
+      ? 'Approved ✅'
+      : isCompleted
+        ? 'Completed ✅'
+        : isDeclined
+          ? 'Declined ❌'
+          : 'Pending Approval ⏳';
+
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0.0, end: 1.0),
       duration: const Duration(milliseconds: 800),
@@ -770,25 +1232,25 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Colors.orange.shade400, Colors.orange.shade600],
+                  colors: badgeColors,
                 ),
                 borderRadius: BorderRadius.circular(25),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.orange.withOpacity(0.4),
+                    color: badgeColors.first.withOpacity(0.4),
                     blurRadius: 12,
                     offset: const Offset(0, 6),
                   ),
                 ],
               ),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.schedule_rounded, color: Colors.white, size: 18),
-                  SizedBox(width: 10),
+                  Icon(badgeIcon, color: Colors.white, size: 18),
+                  const SizedBox(width: 10),
                   Text(
-                    "Pending Approval",
-                    style: TextStyle(
+                    badgeText,
+                    style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
                       fontSize: 14,
@@ -809,11 +1271,22 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
       return _buildPlaceholderCard("User data not available");
     }
 
+    final hasImage = user!.imageUrl.trim().isNotEmpty;
+    final hasPhone = user!.phone.trim().isNotEmpty;
+    final hasEmail = user!.email.trim().isNotEmpty;
+    final joinedOn = _formatJoinedDate(user!.createdAt);
+    final canMessageUser = true; // 🔥 Doctor can ALWAYS message - in ALL cases
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.white,
+        gradient: LinearGradient(
+          colors: [Colors.white, primaryTeal.withOpacity(0.03)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: primaryTeal.withOpacity(0.15), width: 1),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
@@ -822,69 +1295,343 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
           ),
         ],
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: primaryTeal, width: 3),
-              boxShadow: [
-                BoxShadow(
-                  color: primaryTeal.withOpacity(0.2),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
+          Row(
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: primaryTeal, width: 3),
+                  boxShadow: [
+                    BoxShadow(
+                      color: primaryTeal.withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            child: CircleAvatar(
-              radius: 32,
-              backgroundColor: primaryTeal.withOpacity(0.1),
-              backgroundImage:
-                  NetworkImage(user!.imageUrl!),
-              child: null,
-            ),
+                child: CircleAvatar(
+                  radius: 34,
+                  backgroundColor: primaryTeal.withOpacity(0.1),
+                  backgroundImage: hasImage ? NetworkImage(user!.imageUrl) : null,
+                  child: hasImage
+                      ? null
+                      : Text(
+                          user!.name.isNotEmpty
+                              ? user!.name[0].toUpperCase()
+                              : 'U',
+                          style: TextStyle(
+                            color: primaryTeal,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      user!.name,
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF2C3E50),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: primaryTeal.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Text(
+                            user!.role.toUpperCase(),
+                            style: TextStyle(
+                              color: primaryTeal,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Icon(
+                          Icons.circle,
+                          size: 10,
+                          color: user!.online ? Colors.green : Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          user!.online ? 'Online' : 'Offline',
+                          style: TextStyle(
+                            color: Colors.grey[700],
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                decoration: BoxDecoration(
+                  color: primaryTeal.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: IconButton(
+                  icon: Icon(Icons.arrow_forward_ios_rounded,
+                      color: primaryTeal, size: 18),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            UserProfilePage(userId: widget.appointment.userId),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 16),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _buildUserInfoChip(
+                icon: Icons.email_outlined,
+                label: 'Email',
+                value: hasEmail ? user!.email : 'Not provided',
+              ),
+              _buildUserInfoChip(
+                icon: Icons.phone_outlined,
+                label: 'Phone',
+                value: hasPhone ? user!.phone : 'Not provided',
+              ),
+              _buildUserInfoChip(
+                icon: Icons.pets_rounded,
+                label: 'Pet',
+                value: widget.appointment.animalName,
+              ),
+              _buildUserInfoChip(
+                icon: Icons.event_note_rounded,
+                label: 'Joined',
+                value: joinedOn,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              if (hasPhone)
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      _makePhoneCall(user!.phone);
+                    },
+                    icon: const Icon(Icons.call_outlined, size: 18),
+                    label: const Text('Contact'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: primaryTeal,
+                      side: BorderSide(color: primaryTeal.withOpacity(0.5)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              if (hasPhone) const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _openChatWithUser,
+                  icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                  label: const Text('Chat with Pet Owner'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: primaryTeal,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUserInfoChip({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 145),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: primaryTeal.withOpacity(0.18)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: primaryTeal),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  user!.name,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF2C3E50),
+                  label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 2),
                 Text(
-                  user!.role,
-                  style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF2C3E50),
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  String _formatJoinedDate(DateTime? date) {
+    if (date == null) return 'Unknown';
+    return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+  }
+
+  Widget _buildReadOnlyActions() {
+    final isApproved = _currentStatus == 'approved';
+    final isDeclined = _currentStatus == 'declined';
+    final isReapprovalWindowClosed = isDeclined && !_isReapprovalWindowOpen;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: isApproved
+                ? Colors.green.withOpacity(0.08)
+                : isDeclined
+                    ? Colors.red.withOpacity(0.08)
+                    : primaryTeal.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isApproved
+                  ? Colors.green.withOpacity(0.4)
+                  : isDeclined
+                      ? Colors.red.withOpacity(0.4)
+                      : primaryTeal.withOpacity(0.4),
+            ),
+          ),
+          child: Text(
+            isApproved
+                ? 'Appointment already approved. You can continue chat with this user.'
+                : isDeclined
+                ? isReapprovalWindowClosed
+                  ? 'This no-time decline is older than 24 hours and can no longer be re-approved.'
+                  : 'Appointment has been declined. Details are shown for reference.'
+                    : 'Appointment status has already been updated.',
+            style: TextStyle(
+              color: darkGrey,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              height: 1.4,
+            ),
+          ),
+        ),
+        if (isApproved && user != null) ...[
+          const SizedBox(height: 14),
           Container(
             decoration: BoxDecoration(
-              color: primaryTeal.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
+              gradient: LinearGradient(colors: [primaryTeal, lightTeal]),
+              borderRadius: BorderRadius.circular(14),
             ),
-            child: IconButton(
-              icon: Icon(Icons.arrow_forward_ios_rounded,
-                  color: primaryTeal, size: 18),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        UserProfilePage(userId: widget.appointment.userId),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: _openChatWithUser,
+                child: const SizedBox(
+                  height: 54,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.chat_bubble_rounded, color: Colors.white, size: 22),
+                      SizedBox(width: 10),
+                      Text(
+                        'Chat with Pet Owner',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ],
                   ),
-                );
-              },
+                ),
+              ),
             ),
           ),
         ],
+      ],
+    );
+  }
+
+  void _openChatWithUser() {
+    final status = _currentStatus.toLowerCase();
+    final isAppointmentChatReady = status == 'approved' || status == 'active' || status == 'completed';
+    
+    if (!isAppointmentChatReady) {
+      _showSnackBar('Chat is allowed only for approved appointments.');
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          receiverId: widget.appointment.userId,
+          receiverName: user?.name.isNotEmpty == true ? user!.name : 'Pet Owner',
+          receiverImage: user?.imageUrl ?? '',
+          isOnline: true,
+          appointmentId: widget.appointment.id,
+          animalName: widget.appointment.animalName,
+        ),
       ),
     );
   }
@@ -985,9 +1732,13 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
   }
 
   Widget _buildModernAppointmentDetails() {
-    final dateTime = widget.appointment.date.toDate();
-    final formattedDate =
-        "${_getDayName(dateTime.weekday)}, ${_getMonthName(dateTime.month)} ${dateTime.day}, ${dateTime.year}";
+    final appointmentDate = widget.appointment.date.toDate().toLocal();
+    final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+    final appointmentOn =
+        '${_formatTimelineDate(appointmentDate)}  •  ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+    final bookedOn = bookedAt == null
+        ? 'Not recorded'
+        : '${_formatTimelineDate(bookedAt)}  •  ${_formatClock(bookedAt)}';
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -1006,8 +1757,17 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
         children: [
           _detailRow(
             Icons.calendar_today_rounded,
-            "Date & Time",
-            "$formattedDate\n${widget.appointment.time}",
+            'Appointment On',
+            appointmentOn,
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Divider(height: 1),
+          ),
+          _detailRow(
+            Icons.schedule_send_rounded,
+            'Booked On',
+            bookedOn,
           ),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 16),
@@ -1068,6 +1828,8 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
   }
 
   Widget _buildActionButtons() {
+    final isReapproval = _canReapproveDeclined;
+
     return Column(
       children: [
         TweenAnimationBuilder<double>(
@@ -1105,14 +1867,14 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
                 child: Container(
                   height: 60,
                   alignment: Alignment.center,
-                  child: const Row(
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.check_circle_rounded,
                           color: Colors.white, size: 26),
                       SizedBox(width: 12),
                       Text(
-                        "Approve Appointment",
+                        isReapproval ? "Re-Approve Appointment" : "Approve Appointment",
                         style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.bold,
@@ -1127,55 +1889,57 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
             ),
           ),
         ),
-        const SizedBox(height: 16),
-        TweenAnimationBuilder<double>(
-          tween: Tween(begin: 0.0, end: 1.0),
-          duration: const Duration(milliseconds: 700),
-          curve: Curves.easeOut,
-          builder: (context, value, child) {
-            return Opacity(
-              opacity: value,
-              child: Transform.translate(
-                offset: Offset(0, 20 * (1 - value)),
-                child: child,
-              ),
-            );
-          },
-          child: Container(
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.red.shade400, width: 2.5),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
+        if (!isReapproval) ...[
+          const SizedBox(height: 16),
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.0, end: 1.0),
+            duration: const Duration(milliseconds: 700),
+            curve: Curves.easeOut,
+            builder: (context, value, child) {
+              return Opacity(
+                opacity: value,
+                child: Transform.translate(
+                  offset: Offset(0, 20 * (1 - value)),
+                  child: child,
+                ),
+              );
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.red.shade400, width: 2.5),
                 borderRadius: BorderRadius.circular(16),
-                onTap: _declineAppointment,
-                child: Container(
-                  height: 60,
-                  alignment: Alignment.center,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.cancel_rounded,
-                          color: Colors.red.shade600, size: 26),
-                      const SizedBox(width: 12),
-                      Text(
-                        "Decline Request",
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.red.shade600,
-                          letterSpacing: 0.5,
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: _declineAppointment,
+                  child: Container(
+                    height: 60,
+                    alignment: Alignment.center,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.cancel_rounded,
+                            color: Colors.red.shade600, size: 26),
+                        const SizedBox(width: 12),
+                        Text(
+                          "Decline Request",
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red.shade600,
+                            letterSpacing: 0.5,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        ),
+        ],
       ],
     );
   }
@@ -1555,6 +2319,7 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
   }
 
   void _showLoadingDialog(String message) {
+    _isLoadingDialogVisible = true;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1575,7 +2340,18 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
           ),
         ),
       ),
-    );
+    ).then((_) {
+      _isLoadingDialogVisible = false;
+    });
+  }
+
+  void _closeLoadingDialogIfVisible() {
+    if (!_isLoadingDialogVisible || !mounted) return;
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+    }
+    _isLoadingDialogVisible = false;
   }
 
   Future<bool> _showConfirmDialog(String title, String message) async {
@@ -1606,15 +2382,34 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
     return result ?? false;
   }
 
+  Future<void> _makePhoneCall(String phoneNumber) async {
+    try {
+      final Uri phoneUri = Uri(scheme: 'tel', path: phoneNumber);
+      if (await canLaunchUrl(phoneUri)) {
+        await launchUrl(phoneUri);
+        _showSnackBar('📞 Initiating call to $phoneNumber');
+      } else {
+        _showSnackBar('Cannot make calls on this device', isError: true);
+      }
+    } catch (e) {
+      _showSnackBar('Error initiating call: $e', isError: true);
+    }
+  }
+
   void _showSnackBar(String message, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError ? Colors.red : primaryTeal,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: isError ? Colors.red : primaryTeal,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    });
   }
 
   String _getDayName(int weekday) {
@@ -1646,5 +2441,68 @@ class _AppointmentApprovalPageState extends State<AppointmentApprovalPage>
       'December'
     ];
     return months[month - 1];
+  }
+
+  String _formatTimelineDate(DateTime date) {
+    return '${_getDayName(date.weekday)}, ${_getMonthName(date.month)} ${date.day}, ${date.year}';
+  }
+
+  DateTime _combineAppointmentDateAndTime(DateTime date, String timeText) {
+    var normalized = timeText.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+    // Handle time ranges like "2:00 PM - 2:30 PM" or "10:00-11:00"
+    // Extract just the START time
+    if (normalized.contains(' - ')) {
+      normalized = normalized.split(' - ')[0].trim();
+    } else if (normalized.contains('-') && !normalized.startsWith('-')) {
+      // Handle "10:00-11:00" but not negative numbers
+      final parts = normalized.split('-');
+      if (parts.length >= 2 && parts[0].trim().isNotEmpty) {
+        normalized = parts[0].trim();
+      }
+    }
+
+    // Handles values like "09:00 AM", "9:00 PM"
+    final twelveHour = RegExp(r'^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$');
+    final twelveHourMatch = twelveHour.firstMatch(normalized);
+    if (twelveHourMatch != null) {
+      int hour = int.parse(twelveHourMatch.group(1)!);
+      final minute = int.parse(twelveHourMatch.group(2)!);
+      final meridiem = twelveHourMatch.group(3)!.toUpperCase();
+
+      if (hour < 1 || hour > 12 || minute < 0 || minute > 59) {
+        throw FormatException('Invalid appointment time: $timeText');
+      }
+
+      if (hour == 12) hour = 0;
+      if (meridiem == 'PM') hour += 12;
+
+      return DateTime(date.year, date.month, date.day, hour, minute);
+    }
+
+    // Handles values like "14:30"
+    final twentyFourHour = RegExp(r'^(\d{1,2}):(\d{2})$');
+    final twentyFourHourMatch = twentyFourHour.firstMatch(normalized);
+    if (twentyFourHourMatch != null) {
+      final hour = int.parse(twentyFourHourMatch.group(1)!);
+      final minute = int.parse(twentyFourHourMatch.group(2)!);
+
+      if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+        throw FormatException('Invalid appointment time: $timeText');
+      }
+
+      return DateTime(date.year, date.month, date.day, hour, minute);
+    }
+
+    throw FormatException('Unsupported appointment time format: $timeText');
+  }
+
+  String _formatClock(DateTime date) {
+    final hour24 = date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final isPm = hour24 >= 12;
+    final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+    final meridiem = isPm ? 'PM' : 'AM';
+    return '$hour12:$minute $meridiem';
   }
 }

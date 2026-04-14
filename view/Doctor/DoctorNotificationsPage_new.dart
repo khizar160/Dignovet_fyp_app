@@ -85,8 +85,8 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage>
                     key: ValueKey('doctor_notifications_$doctorId'),
                     stream: FirebaseFirestore.instance
                         .collection('notifications')
-                        .where('receiverId', isEqualTo: doctorId)
-                        .orderBy('createdAt', descending: true)
+                        .where('userId', isEqualTo: doctorId)
+
                         .snapshots(),
                     builder: (context, snapshot) {
                       log(
@@ -109,6 +109,12 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage>
                       }
 
                       final notifications = snapshot.data!.docs;
+                      // Sort by createdAt descending (temporary workaround while index builds)
+                      notifications.sort((a, b) {
+                        final aTime = (a['createdAt'] as Timestamp?)?.toDate() ?? DateTime(1970);
+                        final bTime = (b['createdAt'] as Timestamp?)?.toDate() ?? DateTime(1970);
+                        return bTime.compareTo(aTime);
+                      });
                       log(
                         '[DoctorNotificationsPage] Notifications received: ${notifications.length} items',
                       );
@@ -573,7 +579,7 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage>
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         duration: isLoading
             ? const Duration(seconds: 30)
-            : const Duration(seconds: 3),
+            : const Duration(seconds: 15), // Increased from 3 to 15 seconds
       ),
     );
   }

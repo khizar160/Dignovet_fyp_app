@@ -30,4 +30,22 @@ class SupabaseChatStorage {
   return _client.storage.from('Chat').getPublicUrl(fileName);
 }
 
+  Future<String> uploadDocument(
+    File file,
+    String userId, {
+    required String extension,
+  }) async {
+    final sanitizedExt = extension.toLowerCase().replaceAll('.', '');
+    final fileName =
+        'chat_doc_${userId}_${DateTime.now().millisecondsSinceEpoch}.$sanitizedExt';
+
+    await _client.storage.from('Chat').upload(
+          fileName,
+          file,
+          fileOptions: const FileOptions(upsert: true),
+        );
+
+    return _client.storage.from('Chat').getPublicUrl(fileName);
+  }
+
 }

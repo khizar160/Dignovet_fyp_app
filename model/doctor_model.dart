@@ -6,6 +6,8 @@ class DoctorProfile {
   final int experience;
   final String clinicName;
   final String clinicAddress;
+  final double? latitude; // ✅ clinic latitude
+  final double? longitude; // ✅ clinic longitude
   final String about;
   final List<String> availableDays;
   final List<String> availableSlots;
@@ -17,6 +19,8 @@ class DoctorProfile {
     required this.experience,
     required this.clinicName,
     required this.clinicAddress,
+    this.latitude,
+    this.longitude,
     required this.about,
     required this.availableDays,
     required this.availableSlots,
@@ -30,6 +34,8 @@ class DoctorProfile {
       experience: map['experience'] ?? 0,
       clinicName: map['clinicName'] ?? '',
       clinicAddress: map['clinicAddress'] ?? '',
+      latitude: map['latitude']?.toDouble(),
+      longitude: map['longitude']?.toDouble(),
       about: map['about'] ?? '',
       availableDays: List<String>.from(map['availableDays'] ?? []),
       availableSlots: List<String>.from(map['availableSlots'] ?? []),
@@ -43,6 +49,8 @@ class DoctorProfile {
       "experience": experience,
       "clinicName": clinicName,
       "clinicAddress": clinicAddress,
+      "latitude": latitude,
+      "longitude": longitude,
       "about": about,
       "availableDays": availableDays,
       "availableSlots": availableSlots,

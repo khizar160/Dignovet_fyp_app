@@ -5,7 +5,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_application_1/model/appointment_model.dart';
 import 'package:flutter_application_1/services/firebase_authentication/auth_api.dart';
 import 'package:flutter_application_1/services/notification service/notification_service.dart';
-import 'package:flutter_application_1/view/Doctor/Apponitment_approval_page.dart';
+import 'package:flutter_application_1/view/Doctor/Apponitment_approval_page_new.dart';
+import 'package:flutter_application_1/view/User/ChatScreen.dart';
 
 class DoctorNotificationsPage extends StatefulWidget {
   const DoctorNotificationsPage({super.key});
@@ -39,6 +40,31 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
   void dispose() {
     _animationController.dispose();
     super.dispose();
+  }
+  
+  bool _isReapprovableDeclinedAppointment({
+    required String status,
+    required String declineReason,
+    required Timestamp? declinedAt,
+  }) {
+    if (status != 'declined') return false;
+    if (declinedAt == null) return false;
+    final diff = DateTime.now().difference(declinedAt.toDate());
+    return diff.inSeconds >= 0 && diff <= const Duration(days: 1);
+  }
+
+  String _formatReapproveTimeLeft(Timestamp declinedAt) {
+    final expiry = declinedAt.toDate().add(const Duration(days: 1));
+    final remaining = expiry.difference(DateTime.now());
+    if (remaining.inSeconds <= 0) return 'Window closed';
+
+    final hours = remaining.inHours;
+    final minutes = remaining.inMinutes.remainder(60);
+
+    if (hours > 0) {
+      return 'Re-approve in ${hours}h ${minutes}m';
+    }
+    return 'Re-approve in ${minutes}m';
   }
 
   @override
@@ -92,15 +118,14 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
                     },
                     color: primaryTeal,
                     child: StreamBuilder<QuerySnapshot>(
-                      key: ValueKey('doctor_notifications_$doctorId'),
                       stream: FirebaseFirestore.instance
                           .collection('notifications')
                           .where('receiverId', isEqualTo: doctorId)
-                          .orderBy('createdAt', descending: true)
+                          .where('type', isEqualTo: 'appointment_request') // ✅ ONLY PENDING APPOINTMENTS
                           .snapshots(),
                       builder: (context, snapshot) {
                         log(
-                          '[DoctorNotificationsPage] StreamBuilder snapshot state = ${snapshot.connectionState}',
+                          '[DoctorNotificationsPage] ✅ StreamBuilder filtering for PENDING only - state = ${snapshot.connectionState}',
                         );
 
                         if (!snapshot.hasData) {
@@ -113,19 +138,26 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
                         }
 
                         final notifications = snapshot.data!.docs;
+                        // Sort by createdAt descending (temporary workaround while index builds)
+                        notifications.sort((a, b) {
+                          final aTime = (a['createdAt'] as Timestamp?)?.toDate() ?? DateTime(1970);
+                          final bTime = (b['createdAt'] as Timestamp?)?.toDate() ?? DateTime(1970);
+                          return bTime.compareTo(aTime);
+                        });
                         log(
-                          '[DoctorNotificationsPage] Notifications received: ${notifications.length} items',
+                          '[DoctorNotificationsPage] ✅ PENDING notifications received: ${notifications.length} items',
                         );
 
                         if (notifications.isEmpty) {
-                          log('[DoctorNotificationsPage] No notifications found');
+                          log('[DoctorNotificationsPage] ✅ No PENDING notifications - all caught up!');
                           return _buildEmptyState();
                         }
 
                         return ListView.builder(
+                          key: PageStorageKey<String>('doctor_notifications_list'),
                           padding: const EdgeInsets.fromLTRB(20, 30, 20, 80),
                           itemCount: notifications.length,
-                          physics: const BouncingScrollPhysics(),
+                          physics: const AlwaysScrollableScrollPhysics(),
                           itemBuilder: (context, index) {
                             final notif =
                                 notifications[index].data() as Map<String, dynamic>;
@@ -268,11 +300,318 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
       Map<String, dynamic> data, String notifId, int index) {
     final bool isAppointmentRequest = data['type'] == 'appointment_request';
     final bool isRead = data['isRead'] ?? false;
+    final appointmentId = data['appointmentId'] as String?;
 
     log(
       '[DoctorNotificationsPage] Building notification item - id=$notifId, isRead=$isRead',
     );
 
+    if (!isAppointmentRequest || appointmentId == null) {
+      return _buildSimpleNotificationCard(data, notifId, index);
+    }
+
+    // For appointment requests, fetch appointment and user details
+    return FutureBuilder<DocumentSnapshot>(
+      future: FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(appointmentId)
+          .get(),
+      builder: (context, apptSnapshot) {
+        if (apptSnapshot.connectionState == ConnectionState.waiting) {
+          return _buildLoadingCard(index);
+        }
+
+        if (!apptSnapshot.hasData || apptSnapshot.hasError) {
+          log('[DoctorNotificationsPage] Error loading appointment: ${apptSnapshot.error}');
+          return _buildSimpleNotificationCard(data, notifId, index);
+        }
+
+        final apptData = apptSnapshot.data!.data() as Map<String, dynamic>?;
+        if (apptData == null) {
+          return _buildSimpleNotificationCard(data, notifId, index);
+        }
+
+        final userId = apptData['userId'] as String?;
+        if (userId == null || userId.isEmpty) {
+          return _buildSimpleNotificationCard(data, notifId, index);
+        }
+
+        // Fetch user data
+        return FutureBuilder<DocumentSnapshot>(
+          future: FirebaseFirestore.instance
+              .collection('users')
+              .doc(userId)
+              .get(),
+          builder: (context, userSnapshot) {
+            if (userSnapshot.connectionState == ConnectionState.waiting) {
+              return _buildLoadingCard(index);
+            }
+
+            final userData = userSnapshot.data?.data() as Map<String, dynamic>?;
+            final userName = userData?['name'] ?? 'Unknown';
+            final userPhone = userData?['phone'] ?? 'N/A';
+
+            log('[DoctorNotificationsPage] Data loaded - name: $userName, animal: ${apptData['animalName']}');
+
+            return TweenAnimationBuilder<double>(
+              duration: Duration(milliseconds: 300 + (index * 50)),
+              tween: Tween(begin: 0.0, end: 1.0),
+              builder: (context, value, child) {
+                return Transform.translate(
+                  offset: Offset(0, 20 * (1 - value)),
+                  child: Opacity(
+                    opacity: value,
+                    child: child,
+                  ),
+                );
+              },
+              child: GestureDetector(
+                onTap: () => _handleNotificationTap(data, notifId),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 15),
+                  padding: const EdgeInsets.all(15),
+                  decoration: BoxDecoration(
+                    color: isRead ? Colors.white : Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: primaryTeal.withOpacity(0.2),
+                      width: 1.5,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Header
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Appointment Request',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                    color: primaryTeal,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _formatTime(data['createdAt']),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (!isRead)
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: Colors.blue,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+
+                      // Patient Info Box
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[50],
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Patient Information',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey[800],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              userName,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              userPhone,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Appointment Details Box
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[50],
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Appointment Details',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey[800],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            _buildDetailsInfo('Animal', apptData['animalName'] ?? 'N/A'),
+                            const SizedBox(height: 6),
+                            _buildDetailsInfo('Date', _formatDate(apptData['date'])),
+                            const SizedBox(height: 6),
+                            _buildDetailsInfo('Time', apptData['time'] ?? 'N/A'),
+                            const SizedBox(height: 6),
+                            _buildDetailsInfo('Type', apptData['consultationType'] ?? 'N/A'),
+                            const SizedBox(height: 6),
+                            _buildDetailsInfo(
+                              'Amount',
+                              '\$${(apptData['paymentAmount'] ?? 0).toStringAsFixed(2)}',
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // Problem Box (if exists)
+                      if ((apptData['problem'] ?? '').toString().isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.orange.shade200),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Problem Description',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.orange.shade800,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                apptData['problem'] ?? '',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.orange.shade700,
+                                  height: 1.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+
+                      const SizedBox(height: 14),
+
+                      // Action Button
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () => _handleViewDetails(data),
+                          icon: const Icon(Icons.visibility_rounded, size: 17),
+                          label: const Text('Review Request'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryTeal,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 11),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildLoadingCard(int index) {
+    return TweenAnimationBuilder<double>(
+      duration: Duration(milliseconds: 300 + (index * 50)),
+      tween: Tween(begin: 0.0, end: 1.0),
+      builder: (context, value, child) {
+        return Transform.translate(
+          offset: Offset(0, 20 * (1 - value)),
+          child: Opacity(
+            opacity: value,
+            child: child,
+          ),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: primaryTeal.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: primaryTeal.withOpacity(0.2)),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: primaryTeal,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Text(
+              'Loading appointment details...',
+              style: TextStyle(color: Colors.grey[700], fontSize: 14),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSimpleNotificationCard(Map<String, dynamic> data, String notifId, [int index = 0]) {
+    final isRead = data['isRead'] ?? false;
+    
     return TweenAnimationBuilder<double>(
       duration: Duration(milliseconds: 300 + (index * 50)),
       tween: Tween(begin: 0.0, end: 1.0),
@@ -288,160 +627,74 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
       child: GestureDetector(
         onTap: () => _handleNotificationTap(data, notifId),
         child: Container(
-          margin: const EdgeInsets.only(bottom: 16),
-          padding: const EdgeInsets.all(20),
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            color: isRead ? Colors.white : primaryTeal.withOpacity(0.05),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: isRead
-                  ? Colors.grey[200]!
-                  : primaryTeal.withOpacity(0.3),
-              width: 1.5,
-            ),
+            color: isRead ? Colors.white : Colors.blue.shade50,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.grey[300]!),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.04),
-                blurRadius: 10,
-                offset: const Offset(0, 3),
+                color: Colors.black.withOpacity(0.03),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
               ),
             ],
           ),
-          child: Row(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                height: 60,
-                width: 60,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: isAppointmentRequest
-                        ? [primaryTeal.withOpacity(0.2), lightTeal.withOpacity(0.2)]
-                        : [Colors.grey[300]!, Colors.grey[200]!],
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      data['title'] ?? 'Notification',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
                   ),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: (isAppointmentRequest ? primaryTeal : Colors.grey)
-                          .withOpacity(0.2),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Icon(
-                  isAppointmentRequest
-                      ? Icons.event_note_rounded
-                      : Icons.notifications_outlined,
-                  color: isAppointmentRequest ? primaryTeal : Colors.grey[600],
-                  size: 28,
-                ),
+                  Text(
+                    _formatTime(data['createdAt']),
+                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                  ),
+                ],
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            data['title'] ?? 'Notification',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 17,
-                              color: darkGrey,
-                            ),
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            Text(
-                              _formatTime(data['createdAt']),
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            if (!isRead) ...[
-                              const SizedBox(width: 8),
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: primaryTeal,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      data['message'] ?? '',
-                      style: TextStyle(
-                        color: Colors.grey[700],
-                        fontSize: 14,
-                        height: 1.5,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    if (isAppointmentRequest) ...[
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        width: double.infinity,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [primaryTeal, lightTeal],
-                            ),
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: primaryTeal.withOpacity(0.3),
-                                blurRadius: 8,
-                                offset: const Offset(0, 4),
-                              ),
-                            ],
-                          ),
-                          child: ElevatedButton.icon(
-                            onPressed: () => _handleViewDetails(data),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.transparent,
-                              shadowColor: Colors.transparent,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            icon: const Icon(Icons.visibility_rounded,
-                                size: 18, color: Colors.white),
-                            label: const Text(
-                              'View Details',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.3,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
+              const SizedBox(height: 8),
+              Text(
+                data['message'] ?? '',
+                style: TextStyle(fontSize: 13, color: Colors.grey[700], height: 1.4),
               ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildDetailsInfo(String label, String value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+        Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+      ],
+    );
+  }
+
+  Color _getStatusColor(dynamic status) {
+    final statusStr = (status ?? '').toString().toLowerCase();
+    if (statusStr == 'approved') return Colors.green;
+    if (statusStr == 'declined') return Colors.red;
+    if (statusStr == 'pending') return Colors.orange;
+    return Colors.grey;
+  }
+
+  String _formatDate(dynamic dateField) {
+    if (dateField is Timestamp) {
+      final date = dateField.toDate();
+      return '${date.day}/${date.month}/${date.year}';
+    }
+    return 'N/A';
   }
 
   Future<void> _handleNotificationTap(
@@ -498,10 +751,24 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
         appointmentDoc.id,
       );
 
+      final currentStatus = (appointment.status).toLowerCase();
+      final declineReason = (appointmentData['declineReason'] ?? '').toString();
+      final declinedAt = appointmentData['declinedAt'] as Timestamp?;
+      final canReapprove = _isReapprovableDeclinedAppointment(
+        status: currentStatus,
+        declineReason: declineReason,
+        declinedAt: declinedAt,
+      );
+
+      final readOnly = !(currentStatus == 'pending' || canReapprove);
+
       await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => AppointmentApprovalPage(appointment: appointment),
+          builder: (_) => AppointmentApprovalPage(
+            appointment: appointment,
+            readOnly: readOnly,
+          ),
         ),
       );
       log('[DoctorNotificationsPage] Navigated to AppointmentApprovalPage');
@@ -541,7 +808,7 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
         backgroundColor: darkGrey,
         duration: isLoading
             ? const Duration(seconds: 30)
-            : const Duration(seconds: 3),
+            : const Duration(seconds: 15), // Increased from 3 to 15 seconds
       ),
     );
   }
@@ -549,6 +816,262 @@ class _DoctorNotificationsPageState extends State<DoctorNotificationsPage> with 
   Future<void> _handleViewDetails(Map<String, dynamic> data) async {
     log('[DoctorNotificationsPage] View Details tapped');
     await _handleAppointmentNotification(data);
+  }
+
+  Widget _buildAppointmentActionArea(Map<String, dynamic> data) {
+    final appointmentId = data['appointmentId'] as String?;
+    if (appointmentId == null || appointmentId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(appointmentId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.orange.withOpacity(0.4)),
+                ),
+                child: const Text(
+                  'Status: Syncing...',
+                  style: TextStyle(
+                    color: Colors.orange,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildNotificationActionButton(
+                      label: 'View Details',
+                      icon: Icons.visibility_rounded,
+                      onTap: () => _handleViewDetails(data),
+                      isPrimary: true,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          );
+        }
+
+        final hasAppointment = snapshot.hasData && snapshot.data!.exists;
+        final snapData = hasAppointment
+            ? (snapshot.data!.data() ?? <String, dynamic>{})
+            : <String, dynamic>{};
+
+        final status = (snapData['status'] ?? 'pending').toString().toLowerCase();
+        final declineReason = (snapData['declineReason'] ?? '').toString();
+        final declinedAt = snapData['declinedAt'] as Timestamp?;
+
+        final isPending = status == 'pending';
+        final isApproved = status == 'approved';
+        final isDeclined = status == 'declined';
+        final canReapprove = _isReapprovableDeclinedAppointment(
+          status: status,
+          declineReason: declineReason,
+          declinedAt: declinedAt,
+        );
+        final reapproveTimeText = canReapprove && declinedAt != null
+            ? _formatReapproveTimeLeft(declinedAt)
+            : null;
+
+        final statusColor = canReapprove
+            ? Colors.blue
+            : isApproved
+            ? Colors.green
+            : isDeclined
+                ? Colors.red
+                : Colors.orange;
+        final statusLabel = canReapprove
+            ? 'Declined - Re-approve (24h)'
+            : isApproved
+            ? 'Approved'
+            : isDeclined
+                ? 'Declined'
+                : 'Pending';
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: statusColor.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: statusColor.withOpacity(0.4)),
+              ),
+              child: Text(
+                'Status: $statusLabel',
+                style: TextStyle(
+                  color: statusColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            if (reapproveTimeText != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                reapproveTimeText,
+                style: TextStyle(
+                  color: Colors.blue.shade700,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildNotificationActionButton(
+                    label: isPending
+                        ? 'Review Request'
+                        : canReapprove
+                            ? 'Re-Approve Now'
+                            : 'View Details',
+                    icon: Icons.visibility_rounded,
+                    onTap: () => _handleViewDetails(data),
+                    isPrimary: true,
+                  ),
+                ),
+                if (isApproved) ...[
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildNotificationActionButton(
+                      label: 'Open Chat',
+                      icon: Icons.chat_bubble_rounded,
+                      onTap: () => _openChatForAppointment(appointmentId),
+                      isPrimary: false,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildNotificationActionButton({
+    required String label,
+    required IconData icon,
+    required VoidCallback onTap,
+    required bool isPrimary,
+  }) {
+    final gradient = LinearGradient(colors: [primaryTeal, lightTeal]);
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: isPrimary ? gradient : null,
+        color: isPrimary ? null : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: isPrimary ? null : Border.all(color: primaryTeal.withOpacity(0.4)),
+        boxShadow: isPrimary
+            ? [
+                BoxShadow(
+                  color: primaryTeal.withOpacity(0.25),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ]
+            : [],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 11),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  icon,
+                  size: 17,
+                  color: isPrimary ? Colors.white : primaryTeal,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: isPrimary ? Colors.white : primaryTeal,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openChatForAppointment(String appointmentId) async {
+    try {
+      final appointmentDoc = await FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(appointmentId)
+          .get();
+      if (!appointmentDoc.exists) {
+        _showSnackBar('Appointment not found');
+        return;
+      }
+
+      final appointmentData = appointmentDoc.data()!;
+      final appointment = AppointmentModel.fromMap(appointmentData, appointmentDoc.id);
+      final status = appointment.status.toLowerCase();
+      final isAppointmentChatReady = status == 'approved' || status == 'active';
+      
+      if (!isAppointmentChatReady) {
+        _showSnackBar('Chat is available after approval');
+        return;
+      }
+
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(appointment.userId)
+          .get();
+      if (!userDoc.exists) {
+        _showSnackBar('User details not found');
+        return;
+      }
+
+      final userData = userDoc.data()!;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            receiverId: appointment.userId,
+            receiverName: (userData['name'] ?? 'User').toString(),
+            receiverImage: (userData['imageUrl'] ?? '').toString(),
+            isOnline: true,
+            appointmentId: appointment.id,
+            animalName: appointment.animalName,
+          ),
+        ),
+      );
+    } catch (_) {
+      _showSnackBar('Unable to open chat right now');
+    }
   }
 
   String _formatTime(Timestamp? timestamp) {

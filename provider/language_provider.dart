@@ -4,6 +4,7 @@ import 'package:flutter_application_1/services/language_service.dart';
 class LanguageProvider extends ChangeNotifier {
   final LanguageService _languageService = LanguageService();
   bool _isInitialized = false;
+  bool _isDisposed = false;
 
   bool get isInitialized => _isInitialized;
   String get currentLanguage => _languageService.currentLanguage;
@@ -14,19 +15,25 @@ class LanguageProvider extends ChangeNotifier {
   Future<void> init() async {
     await _languageService.init();
     _isInitialized = true;
-    notifyListeners();
+    // Avoid notifying during provider bootstrap to prevent lifecycle race conditions.
   }
 
   // Change language
   Future<void> setLanguage(String language) async {
     await _languageService.setLanguage(language);
-    notifyListeners();
+    _safeNotifyListeners();
   }
 
   // Toggle between English and Urdu
   Future<void> toggleLanguage() async {
     await _languageService.toggleLanguage();
-    notifyListeners();
+    _safeNotifyListeners();
+  }
+
+  void _safeNotifyListeners() {
+    if (!_isDisposed) {
+      notifyListeners();
+    }
   }
 
   // Get translated text
@@ -37,5 +44,11 @@ class LanguageProvider extends ChangeNotifier {
   // Helper method - pass English and Urdu text directly
   String t(String englishText, String urduText) {
     return _languageService.translate(englishText, urduText);
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    super.dispose();
   }
 }

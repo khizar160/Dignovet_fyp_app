@@ -63,6 +63,7 @@ class _AdminEditProfileState extends State<AdminEditProfile> {
       final doc = await _firestore.collection('users').doc(_uid).get();
 
       if (doc.exists) {
+        if (!mounted) return;
         setState(() {
           _nameController.text = doc['name'] ?? '';
           _emailController.text = doc['email'] ?? _auth.currentUser!.email ?? '';
@@ -72,6 +73,7 @@ class _AdminEditProfileState extends State<AdminEditProfile> {
         });
         log('Admin data loaded successfully');
       } else {
+        if (!mounted) return;
         _emailController.text = _auth.currentUser!.email ?? '';
       }
     } catch (e) {
@@ -79,6 +81,7 @@ class _AdminEditProfileState extends State<AdminEditProfile> {
       _showSnackBar('Failed to load profile data', isError: true);
     }
 
+    if (!mounted) return;
     setState(() => _loading = false);
   }
 
@@ -92,6 +95,7 @@ class _AdminEditProfileState extends State<AdminEditProfile> {
         maxHeight: 1024,
       );
       if (picked != null) {
+        if (!mounted) return;
         setState(() => _imageFile = File(picked.path));
         log('Image selected: ${picked.path}');
       }
@@ -108,6 +112,7 @@ class _AdminEditProfileState extends State<AdminEditProfile> {
       return;
     }
 
+    if (!mounted) return;
     setState(() => _saving = true);
     log('Saving admin profile for $_uid');
 
@@ -158,6 +163,7 @@ class _AdminEditProfileState extends State<AdminEditProfile> {
 
       // Reload data to show updated info
       await _loadAdminData();
+      if (!mounted) return;
       setState(() => _imageFile = null); // Clear local file
 
     } catch (e) {
@@ -165,6 +171,7 @@ class _AdminEditProfileState extends State<AdminEditProfile> {
       _showSnackBar('Failed to update profile', isError: true);
     }
 
+    if (!mounted) return;
     setState(() => _saving = false);
   }
 

@@ -3,7 +3,10 @@ import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_application_1/provider/language_provider.dart';
+import 'package:flutter_application_1/services/file_download_service.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:printing/printing.dart';
 
 class AnimalHistoryPage extends StatefulWidget {
   const AnimalHistoryPage({super.key});
@@ -375,13 +378,17 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
             ),
           ),
           // Disease Predictions & Prescriptions
-          _buildHistorySection(animalId, languageProvider),
+          _buildHistorySection(animalId, (data['name'] ?? '').toString(), languageProvider),
         ],
       ),
     );
   }
 
-  Widget _buildHistorySection(String animalId, LanguageProvider languageProvider) {
+  Widget _buildHistorySection(
+    String animalId,
+    String animalName,
+    LanguageProvider languageProvider,
+  ) {
     return StreamBuilder<QuerySnapshot>(
       stream: _firestore
           .collection('diseasePredictions')
@@ -392,12 +399,28 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
         return StreamBuilder<QuerySnapshot>(
           stream: _firestore
               .collection('prescriptions')
-              .where('animalId', isEqualTo: animalId)
-              .limit(3)
+              .where('patientId', isEqualTo: _userId)
               .snapshots(),
           builder: (context, prescriptionSnapshot) {
             final hasPredictions = predictionSnapshot.hasData && predictionSnapshot.data!.docs.isNotEmpty;
-            final hasPrescriptions = prescriptionSnapshot.hasData && prescriptionSnapshot.data!.docs.isNotEmpty;
+            final prescriptionDocs = (prescriptionSnapshot.data?.docs ?? [])
+                .where((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final animal = (data['animalName'] ?? '').toString().trim().toLowerCase();
+                  final nameMatch = animalName.trim().isNotEmpty && animal == animalName.trim().toLowerCase();
+                  final idMatch = (data['animalId'] ?? '').toString() == animalId;
+                  return nameMatch || idMatch;
+                })
+                .toList()
+              ..sort((a, b) {
+                final aTs = (a.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
+                final bTs = (b.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
+                final ad = aTs?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
+                final bd = bTs?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
+                return bd.compareTo(ad);
+              });
+
+            final hasPrescriptions = prescriptionDocs.isNotEmpty;
             
             if (!hasPredictions && !hasPrescriptions) {
               return const SizedBox.shrink();
@@ -471,9 +494,19 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    ...prescriptionSnapshot.data!.docs.map((doc) {
+                    ...prescriptionDocs.map((doc) {
                       final data = doc.data() as Map<String, dynamic>;
-                      final timestamp = (data['timestamp'] as Timestamp?)?.toDate();
+                      final timestamp = ((data['createdAt'] ?? data['timestamp']) as Timestamp?)?.toDate();
+                      final doctorName = (data['doctorName'] ?? 'Doctor').toString();
+                      final summary = (data['summary'] ?? '').toString();
+                      final pdfUrl = (data['pdfUrl'] ?? '').toString();
+                      final fileName = (data['pdfFileName'] ?? 'prescription.pdf').toString();
+                      final followUp = (data['followUp'] ?? '').toString();
+                      final downloadsRaw = data['downloadCount'] ?? 0;
+                      final downloads = downloadsRaw is int
+                          ? downloadsRaw
+                          : int.tryParse(downloadsRaw.toString()) ?? 0;
+
                       return Container(
                         margin: const EdgeInsets.only(bottom: 8),
                         padding: const EdgeInsets.all(12),
@@ -491,20 +524,34 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    data['medicine'] ?? 'N/A',
+                                    summary.isEmpty ? 'Prescription Document' : summary,
                                     style: const TextStyle(
                                       fontWeight: FontWeight.w600,
                                       fontSize: 13,
                                     ),
                                   ),
-                                  if (data['doctorName'] != null)
+                                  Text(
+                                    '${languageProvider.t("By", "از")}: $doctorName',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                  if (followUp.trim().isNotEmpty)
                                     Text(
-                                      '${languageProvider.t("By", "از")}: ${data['doctorName']}',
+                                      'Follow-up: $followUp',
                                       style: TextStyle(
                                         fontSize: 11,
                                         color: Colors.grey[600],
                                       ),
                                     ),
+                                  Text(
+                                    'Downloads: $downloads',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
                                   if (timestamp != null)
                                     Text(
                                       DateFormat('MMM dd, yyyy').format(timestamp),
@@ -513,6 +560,33 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
                                         color: Colors.grey[600],
                                       ),
                                     ),
+                                  const SizedBox(height: 4),
+                                  Wrap(
+                                    spacing: 6,
+                                    children: [
+                                      OutlinedButton.icon(
+                                        onPressed: pdfUrl.isEmpty
+                                            ? null
+                                            : () => _previewHistoryPrescription(
+                                                  prescriptionId: doc.id,
+                                                  pdfUrl: pdfUrl,
+                                                ),
+                                        icon: const Icon(Icons.visibility_rounded, size: 15),
+                                        label: const Text('Preview'),
+                                      ),
+                                      OutlinedButton.icon(
+                                        onPressed: pdfUrl.isEmpty
+                                            ? null
+                                            : () => _downloadHistoryPrescription(
+                                                  prescriptionId: doc.id,
+                                                  pdfUrl: pdfUrl,
+                                                  fileName: fileName,
+                                                ),
+                                        icon: const Icon(Icons.download_rounded, size: 15),
+                                        label: const Text('Download'),
+                                      ),
+                                    ],
+                                  ),
                                 ],
                               ),
                             ),
@@ -528,6 +602,102 @@ class _AnimalHistoryPageState extends State<AnimalHistoryPage> {
         );
       },
     );
+  }
+
+  Future<void> _previewHistoryPrescription({
+    required String prescriptionId,
+    required String pdfUrl,
+  }) async {
+    try {
+      final response = await http.get(Uri.parse(pdfUrl));
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) return;
+      if (!mounted) return;
+
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) {
+          return Dialog(
+            insetPadding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                Container(
+                  height: 52,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: primaryDark,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(4),
+                      topRight: Radius.circular(4),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.picture_as_pdf_rounded, color: Colors.white),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Prescription Preview',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        icon: const Icon(Icons.close_rounded, color: Colors.white),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: PdfPreview(
+                    canChangePageFormat: false,
+                    canChangeOrientation: false,
+                    canDebug: false,
+                    build: (_) async => response.bodyBytes,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+
+      await _firestore.collection('prescriptions').doc(prescriptionId).set({
+        'lastPreviewedBy': _userId,
+        'lastPreviewedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to preview prescription.')),
+      );
+    }
+  }
+
+  Future<void> _downloadHistoryPrescription({
+    required String prescriptionId,
+    required String pdfUrl,
+    required String fileName,
+  }) async {
+    final savedPath = await FileDownloadService.downloadPdf(url: pdfUrl, fileName: fileName);
+    if (savedPath == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to download prescription.')),
+      );
+      return;
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Prescription saved: $savedPath')),
+      );
+    }
+
+    await _firestore.collection('prescriptions').doc(prescriptionId).set({
+      'lastDownloadedBy': _userId,
+      'lastDownloadedAt': FieldValue.serverTimestamp(),
+      'downloadCount': FieldValue.increment(1),
+    }, SetOptions(merge: true));
   }
 
   Widget _buildEmptyState(LanguageProvider languageProvider) {

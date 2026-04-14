@@ -420,7 +420,7 @@ class _RegisterAnimalPageState extends State<RegisterAnimalPage> {
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         margin: const EdgeInsets.all(16),
-        duration: const Duration(seconds: 3),
+        duration: const Duration(seconds: 15), // Increased from 3 to 15 seconds for better visibility
       ),
     );
   }

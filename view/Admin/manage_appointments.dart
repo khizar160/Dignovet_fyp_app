@@ -114,6 +114,7 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
   }
 
   Future<void> _loadAppointments() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     log('Loading appointments from Firebase...');
 
@@ -177,6 +178,7 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
       _filteredAppointments = [];
     }
 
+    if (!mounted) return;
     setState(() => _loading = false);
   }
 
@@ -216,6 +218,7 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
       });
 
       log('Appointment ${appointment.id} status updated to $newStatus');
+      if (!mounted) return;
       
       setState(() {
         final index = _allAppointments.indexWhere((a) => a.id == appointment.id);
@@ -288,6 +291,7 @@ class _ManageAppointmentsPageState extends State<ManageAppointmentsPage> {
   }
 
   void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),

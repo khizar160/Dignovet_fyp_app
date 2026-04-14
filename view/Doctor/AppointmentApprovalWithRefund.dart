@@ -6,6 +6,7 @@ import 'package:flutter_application_1/services/Appointment%20Service/appointment
 import 'package:flutter_application_1/services/payment_service/stripe_payment_service.dart';
 import 'package:flutter_application_1/services/payment_service/supabase_payment_storage.dart';
 import 'package:flutter_application_1/services/notification%20service/notification_service.dart';
+import 'package:flutter_application_1/utils/appointment_time_parser.dart';
 import 'package:flutter_application_1/view/Doctor/UserProfilePage.dart';
 import 'package:flutter_application_1/view/User/ChatScreen.dart';
 
@@ -96,13 +97,48 @@ class _AppointmentApprovalWithRefundPageState
     try {
       setState(() => isProcessing = true);
 
+      // Update status to approved
       await _appointmentService.updateStatus(widget.appointment.id, 'approved');
+      
+      // Calculate appointment start and end times based on slot
+      final appointmentDate = widget.appointment.date.toDate();
+      final timeString = widget.appointment.time;
+      final slotDuration = widget.appointment.slotDuration;
+      
+      // Parse the time range (e.g., "10:00-11:00" or "10:00-10:30")
+      final timeRange = parseAppointmentTimeRange(
+        timeString,
+        appointmentDate: appointmentDate,
+      );
+      
+      final appointmentStartTime = timeRange['start'] as DateTime?;
+      final appointmentEndTime = timeRange['end'] as DateTime?;
+      
+      // Update Firestore with calculated times (if parsing was successful)
+      if (appointmentStartTime != null && appointmentEndTime != null) {
+        await FirebaseFirestore.instance
+            .collection('appointments')
+            .doc(widget.appointment.id)
+            .update({
+          'consultationStartTime': Timestamp.fromDate(appointmentStartTime),
+          'consultationEndTime': Timestamp.fromDate(appointmentEndTime),
+          'slotDuration': slotDuration,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      final appointmentOn =
+          '${_formatTimelineDate(widget.appointment.date.toDate().toLocal())} at ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+      final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+      final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
       
       await _notificationService.sendNotification(
         receiverId: widget.appointment.userId,
         title: 'Appointment Approved ✅',
         message:
-            'Great news! Your appointment for ${animalData?['name'] ?? widget.appointment.animalName} has been approved. The doctor will contact you soon.',
+            'Great news! Your appointment for ${animalData?['name'] ?? widget.appointment.animalName} has been approved.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nChat will be enabled when the appointment time starts.',
         appointmentId: widget.appointment.id,
         type: 'appointment_approved',
       );
@@ -119,6 +155,8 @@ class _AppointmentApprovalWithRefundPageState
               receiverName: user!.name,
               receiverImage: user!.imageUrl,
               isOnline: true,
+              appointmentId: widget.appointment.id,
+              animalName: widget.appointment.animalName,
             ),
           ),
         );
@@ -248,6 +286,12 @@ class _AppointmentApprovalWithRefundPageState
       // Determine if refund is needed
       final bool needsRefund = declineReason != 'fake_screenshot';
       final String declineMessage = _getDeclineReasonMessage(declineReason);
+        final appointmentOn =
+          '${_formatTimelineDate(widget.appointment.date.toDate().toLocal())} at ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+        final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+        final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
 
       // Update appointment status with reason
       await _appointmentService.updateStatus(widget.appointment.id, 'declined');
@@ -274,7 +318,7 @@ class _AppointmentApprovalWithRefundPageState
           receiverId: widget.appointment.userId,
           title: '💰 Refund Initiated',
           message:
-              'Your appointment for ${animalData?['name'] ?? widget.appointment.animalName} has been declined. Refund of Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} is being processed. You will receive your payment back within 24-48 hours via your payment method.',
+              'Your appointment for ${animalData?['name'] ?? widget.appointment.animalName} has been declined.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nRefund of Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} is being processed. You will receive your payment back within 24-48 hours via your payment method.',
           appointmentId: widget.appointment.id,
           type: 'refund_initiated',
         );
@@ -298,7 +342,7 @@ class _AppointmentApprovalWithRefundPageState
           receiverId: widget.appointment.userId,
           title: '❌ Appointment Declined',
           message:
-              'Your appointment for ${animalData?['name'] ?? widget.appointment.animalName} has been declined. Reason: $declineMessage. No refund will be processed due to invalid payment verification.',
+              'Your appointment for ${animalData?['name'] ?? widget.appointment.animalName} has been declined.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nReason: $declineMessage. No refund will be processed due to invalid payment verification.',
           appointmentId: widget.appointment.id,
           type: 'appointment_declined',
         );
@@ -525,6 +569,12 @@ class _AppointmentApprovalWithRefundPageState
           .get();
 
       final reasonText = _getDeclineReasonMessage(reason);
+      final appointmentOn =
+          '${_formatTimelineDate(widget.appointment.date.toDate().toLocal())} at ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+      final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+      final bookedOn = bookedAt == null
+          ? 'Not recorded'
+          : '${_formatTimelineDate(bookedAt)} at ${_formatClock(bookedAt)}';
 
       // Send notification to all admins
       for (var adminDoc in adminSnapshot.docs) {
@@ -532,7 +582,7 @@ class _AppointmentApprovalWithRefundPageState
           receiverId: adminDoc.id,
           title: '💰 Manual Refund Required',
           message:
-              'Doctor declined appointment ${widget.appointment.id}. Please process manual refund of Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} to ${user?.name ?? "User"}. Reason: $reasonText',
+              'Doctor declined appointment ${widget.appointment.id}. Please process manual refund of Rs. ${widget.appointment.paymentAmount.toStringAsFixed(0)} to ${user?.name ?? "User"}.\nAppointment On: $appointmentOn\nBooked On: $bookedOn\nReason: $reasonText',
           appointmentId: widget.appointment.id,
           type: 'admin_refund_request',
         );
@@ -920,9 +970,13 @@ class _AppointmentApprovalWithRefundPageState
   }
 
   Widget _buildAppointmentDetails() {
-    final appointmentDate = widget.appointment.date.toDate();
-    final formattedDate =
-        "${appointmentDate.day}/${appointmentDate.month}/${appointmentDate.year}";
+    final appointmentDate = widget.appointment.date.toDate().toLocal();
+    final bookedAt = widget.appointment.createdAt?.toDate().toLocal();
+    final appointmentOn =
+        '${_formatTimelineDate(appointmentDate)}  •  ${widget.appointment.time.trim().isEmpty ? 'Time not provided' : widget.appointment.time.trim()}';
+    final bookedOn = bookedAt == null
+        ? 'Not recorded'
+        : '${_formatTimelineDate(bookedAt)}  •  ${_formatClock(bookedAt)}';
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -934,14 +988,52 @@ class _AppointmentApprovalWithRefundPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _detailRow(Icons.calendar_today, "Date", formattedDate),
+          _detailRow(Icons.calendar_today, 'Appointment On', appointmentOn),
           const Divider(height: 20),
-          _detailRow(Icons.access_time, "Time", widget.appointment.time),
+          _detailRow(Icons.schedule_send, 'Booked On', bookedOn),
           const Divider(height: 20),
           _detailRow(Icons.medical_services, "Problem", widget.appointment.problem),
         ],
       ),
     );
+  }
+
+  String _formatTimelineDate(DateTime date) {
+    const dayNames = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday'
+    ];
+    const monthNames = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December'
+    ];
+
+    final day = dayNames[date.weekday - 1];
+    final month = monthNames[date.month - 1];
+    return '$day, $month ${date.day}, ${date.year}';
+  }
+
+  String _formatClock(DateTime date) {
+    final hour24 = date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final isPm = hour24 >= 12;
+    final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+    return '$hour12:$minute ${isPm ? 'PM' : 'AM'}';
   }
 
   Widget _detailRow(IconData icon, String label, String value) {

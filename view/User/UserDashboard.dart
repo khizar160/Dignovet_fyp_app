@@ -232,10 +232,13 @@
 // ----------------Better interface below------------------
 
 import 'dart:developer';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_application_1/provider/language_provider.dart';
 import 'package:flutter_application_1/view/User/BookAppointment.dart';
+import 'package:flutter_application_1/view/User/BookAppointmentWithPayment.dart';
 import 'package:flutter_application_1/view/User/DiseasePrediction.dart';
 import 'package:flutter_application_1/view/User/Notifications.dart';
 import 'package:flutter_application_1/view/User/Profile.dart';
@@ -541,6 +544,8 @@ class _UserDashboardPageState extends State<UserDashboardPage>
             const SizedBox(height: 8),
             _buildWelcomeSection(languageProvider),
             const SizedBox(height: 32),
+            _buildAppRatingCard(), // 🔥 User's App Rating Card
+            const SizedBox(height: 28),
             Text(
               languageProvider.translate('dashboard'),
               style: const TextStyle(
@@ -552,10 +557,151 @@ class _UserDashboardPageState extends State<UserDashboardPage>
             ),
             const SizedBox(height: 16),
             _buildDashboardGrid(dashboardItems),
+            const SizedBox(height: 28),
+            _buildTopRatedDoctorsSection(),
             const SizedBox(height: 24),
           ],
         ),
       ),
+    );
+  }
+
+  // 🔥 User's App Rating Card - Beautiful Design
+  Widget _buildAppRatingCard() {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    
+    return FutureBuilder<QuerySnapshot>(
+      future: FirebaseFirestore.instance
+          .collection('consultation_ratings')
+          .where('userId', isEqualTo: userId)
+          .get(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox.shrink();
+        }
+        
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        
+        final ratings = snapshot.data!.docs;
+        double averageRating = 0.0;
+        
+        if (ratings.isNotEmpty) {
+          double total = 0.0;
+          for (var rating in ratings) {
+            final appRating = (rating.data() as Map<String, dynamic>)['appRating'] as num?;
+            if (appRating != null) {
+              total += appRating.toDouble();
+            }
+          }
+          averageRating = ratings.isNotEmpty ? total / ratings.length : 0.0;
+        }
+        
+        return Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                const Color(0xFFFFB81C).withOpacity(0.15),
+                const Color(0xFFFFC107).withOpacity(0.08),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: const Color(0xFFFFB81C).withOpacity(0.4),
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFFFB81C).withOpacity(0.1),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFB81C),
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFFFB81C).withOpacity(0.3),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(Icons.star_rounded, color: Colors.white, size: 28),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Your App Rating',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF2C3E50),
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          '${averageRating.toStringAsFixed(1)} out of 5.0',
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFFFB81C),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              // Star Rating Display
+              Row(
+                children: List.generate(5, (index) {
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Icon(
+                      index < averageRating.toInt()
+                          ? Icons.star_rounded
+                          : (index < averageRating && averageRating % 1 != 0)
+                              ? Icons.star_half_rounded
+                              : Icons.star_outline_rounded,
+                      color: const Color(0xFFFFB81C),
+                      size: 20,
+                    ),
+                  );
+                }),
+              ),
+              const SizedBox(height: 12),
+              // Ratings Info
+              Text(
+                'From ${ratings.length} consultation${ratings.length != 1 ? 's' : ''}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -719,6 +865,203 @@ class _UserDashboardPageState extends State<UserDashboardPage>
     );
   }
 
+  Widget _buildTopRatedDoctorsSection() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: 'doctor')
+          .where('totalReviews', isGreaterThan: 0)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        final docs = snapshot.data!.docs.toList();
+        docs.sort((a, b) {
+          final aData = a.data();
+          final bData = b.data();
+          final aRating = (aData['averageRating'] as num?)?.toDouble() ?? 0;
+          final bRating = (bData['averageRating'] as num?)?.toDouble() ?? 0;
+          final aReviews = (aData['totalReviews'] as num?)?.toInt() ?? 0;
+          final bReviews = (bData['totalReviews'] as num?)?.toInt() ?? 0;
+          final byRating = bRating.compareTo(aRating);
+          if (byRating != 0) return byRating;
+          return bReviews.compareTo(aReviews);
+        });
+
+        final top = docs.take(5).toList();
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Top Rated Doctors',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF2C3E50),
+                letterSpacing: -0.2,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4FBFA),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF00796B).withOpacity(0.18)),
+              ),
+              child: Column(
+                children: top.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  final data = entry.value.data();
+                  final doctorId = entry.value.id;
+                  return Padding(
+                    padding: EdgeInsets.only(bottom: index == top.length - 1 ? 0 : 10),
+                    child: _buildTopRatedDoctorTile(doctorId: doctorId, data: data),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildTopRatedDoctorTile({
+    required String doctorId,
+    required Map<String, dynamic> data,
+  }) {
+    final name = (data['name'] ?? 'Doctor').toString();
+    final imageUrl = (data['imageUrl'] ?? '').toString();
+    final specialization = (data['specialization'] ?? 'Veterinarian').toString();
+    final rating = (data['averageRating'] as num?)?.toDouble() ?? 0;
+    final reviews = (data['totalReviews'] as num?)?.toInt() ?? 0;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.grey.shade200, width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: const Color(0xFF00796B).withOpacity(0.3),
+                width: 2,
+              ),
+            ),
+            child: CircleAvatar(
+              radius: 24,
+              backgroundImage: imageUrl.isNotEmpty ? NetworkImage(imageUrl) : null,
+              child: imageUrl.isEmpty
+                  ? const Icon(Icons.person_outline, color: Color(0xFF00796B))
+                  : null,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  specialization,
+                  style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 6),
+                // 🔥 Beautiful Rating Display
+                Row(
+                  children: [
+                    ...List.generate(
+                      5,
+                      (index) => Padding(
+                        padding: const EdgeInsets.only(right: 2),
+                        child: Icon(
+                          index < rating.toInt()
+                              ? Icons.star_rounded
+                              : (index < rating && rating % 1 != 0)
+                                  ? Icons.star_half_rounded
+                                  : Icons.star_outline_rounded,
+                          size: 14,
+                          color: const Color(0xFFFFB81C),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${rating.toStringAsFixed(1)}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFFFFB81C),
+                      ),
+                    ),
+                    Text(
+                      ' ($reviews)',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => BookAppointmentWithPaymentPage(
+                    doctorId: doctorId,
+                    doctorName: name,
+                    doctorImage: imageUrl,
+                  ),
+                ),
+              );
+            },
+            style: TextButton.styleFrom(
+              backgroundColor: const Color(0xFF00796B).withOpacity(0.1),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            child: const Text(
+              'Book',
+              style: TextStyle(
+                color: Color(0xFF00796B),
+                fontWeight: FontWeight.w600,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildFloatingActionButton(LanguageProvider languageProvider) {
     return Container(
       decoration: BoxDecoration(
@@ -757,3 +1100,4 @@ class _UserDashboardPageState extends State<UserDashboardPage>
     );
   }
 }
+

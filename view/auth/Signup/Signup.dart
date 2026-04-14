@@ -384,6 +384,7 @@ class SignupPageState extends State<SignupPage> with SingleTickerProviderStateMi
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _paymentAccountController = TextEditingController(); // JazzCash/EasyPaisa
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
 
@@ -413,6 +414,7 @@ class SignupPageState extends State<SignupPage> with SingleTickerProviderStateMi
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
+    _paymentAccountController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     super.dispose();
@@ -443,6 +445,7 @@ class SignupPageState extends State<SignupPage> with SingleTickerProviderStateMi
           'name': _nameController.text.trim(),
           'email': _emailController.text.trim(),
           'phone': _phoneController.text.trim(),
+          'paymentAccount': _paymentAccountController.text.trim(), // For refunds
           'role': role.name,
           'isBlocked': false,
           'createdAt': FieldValue.serverTimestamp(),
@@ -508,7 +511,7 @@ class SignupPageState extends State<SignupPage> with SingleTickerProviderStateMi
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         margin: const EdgeInsets.all(16),
-        duration: const Duration(seconds: 3),
+        duration: const Duration(seconds: 15), // Increased from 3 to 15 seconds for better visibility
       ),
     );
   }
@@ -679,6 +682,15 @@ class SignupPageState extends State<SignupPage> with SingleTickerProviderStateMi
               keyboardType: TextInputType.phone,
               validator: (value) =>
                   value == null || value.isEmpty ? 'Please enter your phone number' : null,
+            ),
+            const SizedBox(height: 18),
+            _buildTextField(
+              controller: _paymentAccountController,
+              icon: Icons.account_balance_wallet_outlined,
+              label: 'JazzCash / EasyPaisa Number',
+              keyboardType: TextInputType.phone,
+              validator: (value) =>
+                  value == null || value.isEmpty ? 'Required for refunds' : null,
             ),
             const SizedBox(height: 18),
             _buildPasswordField(

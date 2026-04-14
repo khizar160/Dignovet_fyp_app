@@ -44,10 +44,17 @@ class AppUser {
   final int? experience;
   final String? clinicName;
   final String? clinicAddress;
+  final double? latitude;
+  final double? longitude;
   final String? about;
   final List<String>? availableDays;
   final List<String>? availableSlots;
   final bool? profileCompleted;
+  final double? onlineConsultationFee;
+  final double? homeVisitFee;
+  final double? averageRating;
+  final int? totalReviews;
+  final double? ratingSum;
 
   AppUser({
     required this.id,
@@ -64,10 +71,17 @@ class AppUser {
     this.experience,
     this.clinicName,
     this.clinicAddress,
+    this.latitude,
+    this.longitude,
     this.about,
     this.availableDays,
     this.availableSlots,
     this.profileCompleted,
+    this.onlineConsultationFee,
+    this.homeVisitFee,
+    this.averageRating,
+    this.totalReviews,
+    this.ratingSum,
   });
 
   factory AppUser.fromMap(Map<String, dynamic> map, String id) {
@@ -88,6 +102,8 @@ class AppUser {
       experience: map['experience'],
       clinicName: map['clinicName'],
       clinicAddress: map['clinicAddress'],
+      latitude: map['latitude']?.toDouble(),
+      longitude: map['longitude']?.toDouble(),
       about: map['about'],
       availableDays: map['availableDays'] != null 
           ? List<String>.from(map['availableDays']) 
@@ -96,6 +112,11 @@ class AppUser {
           ? List<String>.from(map['availableSlots']) 
           : null,
       profileCompleted: map['profileCompleted'],
+      onlineConsultationFee: map['onlineConsultationFee']?.toDouble(),
+      homeVisitFee: map['homeVisitFee']?.toDouble(),
+      averageRating: map['averageRating']?.toDouble(),
+      totalReviews: map['totalReviews'],
+      ratingSum: map['ratingSum']?.toDouble(),
     );
   }
 
@@ -122,6 +143,29 @@ class AppUser {
         'availableSlots': availableSlots ?? [],
         'profileCompleted': profileCompleted ?? false,
       });
+      
+      // Add latitude and longitude only if they're not null
+      if (latitude != null) {
+        map['latitude'] = latitude!;
+      }
+      if (longitude != null) {
+        map['longitude'] = longitude!;
+      }
+      if (onlineConsultationFee != null) {
+        map['onlineConsultationFee'] = onlineConsultationFee!;
+      }
+      if (homeVisitFee != null) {
+        map['homeVisitFee'] = homeVisitFee!;
+      }
+      if (averageRating != null) {
+        map['averageRating'] = averageRating!;
+      }
+      if (totalReviews != null) {
+        map['totalReviews'] = totalReviews!;
+      }
+      if (ratingSum != null) {
+        map['ratingSum'] = ratingSum!;
+      }
     }
 
     return map;

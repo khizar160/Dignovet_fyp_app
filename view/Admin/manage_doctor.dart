@@ -76,6 +76,7 @@ class _ManageDoctorsPageState extends State<ManageDoctorsPage> {
   }
 
   Future<void> _loadDoctors() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     log('Loading doctors from Firebase...');
 
@@ -117,6 +118,7 @@ class _ManageDoctorsPageState extends State<ManageDoctorsPage> {
       _filteredDoctors = [];
     }
 
+    if (!mounted) return;
     setState(() => _loading = false);
   }
 
@@ -174,6 +176,7 @@ class _ManageDoctorsPageState extends State<ManageDoctorsPage> {
       });
 
       log('Doctor ${doctor.name} ${shouldBlock ? "blocked" : "unblocked"}');
+      if (!mounted) return;
       
       setState(() {
         final index = _allDoctors.indexWhere((d) => d.id == doctor.id);
@@ -216,6 +219,7 @@ class _ManageDoctorsPageState extends State<ManageDoctorsPage> {
   }
 
   void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),

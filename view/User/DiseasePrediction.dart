@@ -429,7 +429,7 @@ class _DiseasePredictionPageState extends State<DiseasePredictionPage> {
 
       var request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://192.168.137.196:8000/predict'),
+        Uri.parse('http://192.168.1.8:8000/predict'),
       );
 
       // Add all image files

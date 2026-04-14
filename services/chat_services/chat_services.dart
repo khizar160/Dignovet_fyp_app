@@ -100,12 +100,19 @@ class ChatService {
   String _chatId(String a, String b) =>
       a.compareTo(b) < 0 ? '${a}_$b' : '${b}_$a';
 
+  String _lastMessageLabel(ChatMessage message) {
+    if (message.type == MessageType.image) return 'Image';
+    if (message.type == MessageType.video) return 'Video';
+    if (message.type == MessageType.prescription) return 'Prescription';
+    return (message.text ?? '').isEmpty ? 'Message' : (message.text ?? 'Message');
+  }
+
   Future<void> sendMessage(ChatMessage message) async {
     final chatId = _chatId(message.senderId, message.receiverId);
 
     await _firestore.collection('chats').doc(chatId).set({
       'participants': [message.senderId, message.receiverId],
-      'lastMessage': message.text ?? '📷 Image',
+      'lastMessage': _lastMessageLabel(message),
       'lastMessageTime': message.timestamp,
     }, SetOptions(merge: true));
 
@@ -147,5 +154,65 @@ class ChatService {
         .map((snapshot) => snapshot.docs
             .map((d) => ChatMessage.fromMap(d.data(), d.id))
             .toList());
+  }
+
+  Future<void> deleteMessage({
+    required String senderId,
+    required String receiverId,
+    required String messageId,
+  }) async {
+    final chatId = _chatId(senderId, receiverId);
+    final chatRef = _firestore.collection('chats').doc(chatId);
+
+    await chatRef.collection('messages').doc(messageId).delete();
+
+    final latest = await chatRef
+        .collection('messages')
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .get();
+
+    if (latest.docs.isEmpty) {
+      await chatRef.set({
+        'lastMessage': '',
+        'lastMessageTime': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      return;
+    }
+
+    final latestMsg = ChatMessage.fromMap(latest.docs.first.data(), latest.docs.first.id);
+    await chatRef.set({
+      'lastMessage': _lastMessageLabel(latestMsg),
+      'lastMessageTime': latestMsg.timestamp,
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> clearChat({
+    required String userA,
+    required String userB,
+  }) async {
+    final chatId = _chatId(userA, userB);
+    final chatRef = _firestore.collection('chats').doc(chatId);
+    final messagesRef = chatRef.collection('messages');
+
+    while (true) {
+      final snapshot = await messagesRef.limit(400).get();
+      if (snapshot.docs.isEmpty) break;
+
+      final batch = _firestore.batch();
+      for (final doc in snapshot.docs) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+
+      if (snapshot.docs.length < 400) break;
+    }
+
+    await chatRef.set({
+      'lastMessage': '',
+      'lastMessageTime': FieldValue.serverTimestamp(),
+      'clearedAt': FieldValue.serverTimestamp(),
+      'clearedBy': userA,
+    }, SetOptions(merge: true));
   }
 }

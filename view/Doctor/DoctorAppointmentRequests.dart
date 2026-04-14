@@ -1,6 +1,7 @@
 import 'dart:developer';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
 import 'package:flutter_application_1/model/appointment_model.dart';
 import 'package:flutter_application_1/services/Appointment Service/appointment_services.dart';
 import 'package:flutter_application_1/services/firebase_authentication/auth_api.dart';
@@ -17,24 +18,33 @@ class DoctorAppointmentRequestsPage extends StatefulWidget {
 
 class _DoctorAppointmentRequestsPageState
     extends State<DoctorAppointmentRequestsPage> {
-  final AppointmentService _appointmentService = AppointmentService();
-  final NotificationService _notificationService = NotificationService();
-
   final Color primaryTeal = Color(0xFF00796B);
   final Color lightTeal = Color(0xFF4DB6AC);
   final Color cardGrey = Color(0xFFF8F9FA);
   final Color darkGrey = Color(0xFF2C3E50);
   final Color scaffoldBg = Color(0xFFF5F7FA);
+  bool _isOpeningDetails = false;
 
-  String _formatDate(Timestamp timestamp) {
-    final date = timestamp.toDate().toLocal();
-    final now = DateTime.now();
-    final difference = now.difference(date).inDays;
+  bool _canReapprove(AppointmentModel appointment) {
+    if (appointment.status.toLowerCase() != 'declined') return false;
+    final declinedAt = appointment.declinedAt;
+    if (declinedAt == null) return false;
+    final diff = DateTime.now().difference(declinedAt.toDate());
+    return diff.inSeconds >= 0 && diff <= const Duration(days: 1);
+  }
 
-    if (difference == 0) return 'Today';
-    if (difference == 1) return 'Yesterday';
-    if (difference < 7) return '$difference days ago';
-    return '${date.day}/${date.month}/${date.year}';
+  String _formatAppointmentSchedule(AppointmentModel appointment) {
+    final date = appointment.date.toDate().toLocal();
+    final datePart = DateFormat('EEE, dd MMM yyyy').format(date);
+    final time = appointment.time.trim();
+    return time.isEmpty ? datePart : '$datePart  •  $time';
+  }
+
+  String _formatBookedOn(AppointmentModel appointment) {
+    final bookedAt = appointment.createdAt;
+    if (bookedAt == null) return 'Not recorded';
+    return DateFormat('EEE, dd MMM yyyy  •  hh:mm a')
+        .format(bookedAt.toDate().toLocal());
   }
 
   @override
@@ -79,7 +89,10 @@ class _DoctorAppointmentRequestsPageState
                   color: primaryTeal,
                   child: StreamBuilder<QuerySnapshot>(
                     key: ValueKey('doctor_appointment_requests_$doctorId'),
-                    stream: _appointmentService.doctorAppointments(doctorId),
+                    stream: FirebaseFirestore.instance
+                      .collection('appointments')
+                      .where('doctorId', isEqualTo: doctorId)
+                      .snapshots(),
                     builder: (context, snapshot) {
                       log('StreamBuilder state: ${snapshot.connectionState}');
                       if (snapshot.connectionState == ConnectionState.waiting) {
@@ -95,7 +108,7 @@ class _DoctorAppointmentRequestsPageState
                       }
 
                       if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                        log('No pending appointment requests found');
+                        log('No appointment requests found');
                         return _buildEmptyState();
                       }
 
@@ -113,15 +126,23 @@ class _DoctorAppointmentRequestsPageState
                         return appointment;
                       }).toList();
 
-                      // Sort by date descending
-                      appointments.sort((a, b) => b.date.compareTo(a.date));
+                      // Only show pending requests or recent no-time declines that are re-approvable.
+                      final actionableAppointments = appointments.where((appointment) {
+                        final status = appointment.status.toLowerCase();
+                        return status == 'pending' || _canReapprove(appointment);
+                      }).toList()
+                        ..sort((a, b) => b.date.compareTo(a.date));
+
+                      if (actionableAppointments.isEmpty) {
+                        return _buildEmptyState();
+                      }
 
                       return ListView.builder(
                         padding: const EdgeInsets.all(20),
-                        itemCount: appointments.length,
+                        itemCount: actionableAppointments.length,
                         physics: const BouncingScrollPhysics(),
                         itemBuilder: (context, index) {
-                          final appointment = appointments[index];
+                          final appointment = actionableAppointments[index];
                           return _buildModernAppointmentCard(appointment, index);
                         },
                       );
@@ -183,7 +204,7 @@ class _DoctorAppointmentRequestsPageState
             ),
             const SizedBox(height: 8),
             Text(
-              'Review pending appointment requests',
+              'Review pending requests and reversible declines (24h)',
               style: TextStyle(
                 color: Colors.white.withOpacity(0.9),
                 fontSize: 15,
@@ -262,7 +283,7 @@ class _DoctorAppointmentRequestsPageState
               ),
               const SizedBox(height: 24),
               Text(
-                'No Pending Requests',
+                'No Actionable Requests',
                 style: TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
@@ -271,7 +292,7 @@ class _DoctorAppointmentRequestsPageState
               ),
               const SizedBox(height: 12),
               Text(
-                'New appointment requests will appear here',
+                'Pending or 24-hour reversible declined requests will appear here',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 15,
@@ -290,6 +311,21 @@ class _DoctorAppointmentRequestsPageState
     log(
       'Building appointment item for: ${appointment.animalName}, id: ${appointment.id}',
     );
+    final status = appointment.status.toLowerCase();
+    final canReapprove = _canReapprove(appointment);
+    final isDeclined = status == 'declined';
+
+    final badgeText = canReapprove
+        ? 'Declined - Re-approve'
+        : isDeclined
+            ? 'Declined'
+            : 'Pending';
+    final badgeGradient = canReapprove
+        ? [Colors.blue.shade500, Colors.blue.shade700]
+        : isDeclined
+            ? [Colors.red.shade400, Colors.red.shade600]
+            : [Colors.orange.shade400, Colors.orange.shade600];
+
     return TweenAnimationBuilder<double>(
       duration: Duration(milliseconds: 300 + (index * 50)),
       tween: Tween(begin: 0.0, end: 1.0),
@@ -363,6 +399,8 @@ class _DoctorAppointmentRequestsPageState
                           children: [
                             Text(
                               appointment.animalName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -373,16 +411,20 @@ class _DoctorAppointmentRequestsPageState
                             Row(
                               children: [
                                 Icon(
-                                  Icons.access_time_rounded,
+                                  Icons.event_rounded,
                                   size: 14,
                                   color: Colors.grey[500],
                                 ),
                                 const SizedBox(width: 4),
-                                Text(
-                                  _formatDate(appointment.date),
-                                  style: TextStyle(
-                                    color: Colors.grey[600],
-                                    fontSize: 13,
+                                Expanded(
+                                  child: Text(
+                                    _formatAppointmentSchedule(appointment),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: Colors.grey[600],
+                                      fontSize: 13,
+                                    ),
                                   ),
                                 ),
                               ],
@@ -397,12 +439,12 @@ class _DoctorAppointmentRequestsPageState
                         ),
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
-                            colors: [Colors.orange.shade400, Colors.orange.shade600],
+                            colors: badgeGradient,
                           ),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Text(
-                          'Pending',
+                        child: Text(
+                          badgeText,
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 12,
@@ -418,7 +460,7 @@ class _DoctorAppointmentRequestsPageState
                   Row(
                     children: [
                       Icon(
-                        Icons.schedule_rounded,
+                        Icons.calendar_month_rounded,
                         size: 18,
                         color: primaryTeal,
                       ),
@@ -428,7 +470,7 @@ class _DoctorAppointmentRequestsPageState
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Time',
+                              'Appointment On',
                               style: TextStyle(
                                 color: Colors.grey[600],
                                 fontSize: 12,
@@ -437,7 +479,42 @@ class _DoctorAppointmentRequestsPageState
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              appointment.time,
+                              _formatAppointmentSchedule(appointment),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: darkGrey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.schedule_send_rounded,
+                        size: 18,
+                        color: primaryTeal,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Booked On',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _formatBookedOn(appointment),
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
@@ -486,6 +563,26 @@ class _DoctorAppointmentRequestsPageState
                       ),
                     ],
                   ),
+                  if (canReapprove) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                      ),
+                      child: Text(
+                        'This appointment was declined and can be re-approved within 24 hours.',
+                        style: TextStyle(
+                          color: Colors.blue.shade800,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -511,20 +608,26 @@ class _DoctorAppointmentRequestsPageState
                   child: InkWell(
                     borderRadius: BorderRadius.circular(14),
                     onTap: () async {
+                      if (_isOpeningDetails) return;
+                      setState(() => _isOpeningDetails = true);
                       log(
                         'View Details pressed for appointment id: ${appointment.id}',
                       );
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              AppointmentApprovalPage(appointment: appointment),
-                        ),
-                      );
-                      // Force refresh after returning
-                      if (mounted) {
-                        log('Returned from appointment details, refreshing');
-                        setState(() {});
+                      try {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                AppointmentApprovalPage(appointment: appointment),
+                          ),
+                        );
+                      } finally {
+                        if (mounted) {
+                          log('Returned from appointment details, refreshing');
+                          setState(() {
+                            _isOpeningDetails = false;
+                          });
+                        }
                       }
                     },
                     child: Container(

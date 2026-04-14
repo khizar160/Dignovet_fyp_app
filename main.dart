@@ -4,9 +4,14 @@ import 'package:flutter_application_1/firebase_options.dart';
 import 'package:flutter_application_1/provider/chat_provider.dart';
 import 'package:flutter_application_1/provider/user_provider.dart';
 import 'package:flutter_application_1/provider/language_provider.dart';
+import 'package:flutter_application_1/services/appointment_reminder_scheduler.dart';
+import 'package:flutter_application_1/services/notification service/push_notification_service.dart';
 import 'package:flutter_application_1/view/auth/login/login.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+// Global navigator key for navigation from anywhere in the app
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,17 +21,15 @@ void main() async {
     anonKey:
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXlzZWZobWVvemxvcWx1dm90Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzMjU4NjMsImV4cCI6MjA4MTkwMTg2M30.E2MbGS-DYH7BVSyfGjUP5z5qG1_Xj2zB3ynrZBz-WXI',
   );
-
-  // Initialize Language Service
-  final languageProvider = LanguageProvider();
-  await languageProvider.init();
+  await PushNotificationService.instance.initialize();
+  appointmentReminderScheduler.start();
 
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => UserProvider()),
         ChangeNotifierProvider(create: (_) => ChatProvider()),
-        ChangeNotifierProvider.value(value: languageProvider),
+        ChangeNotifierProvider(create: (_) => LanguageProvider()..init()),
       ],
       child: const MyApp(),
     ),
@@ -41,6 +44,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Flutter Demo',
+      navigatorKey: navigatorKey,
       theme: ThemeData(
         // This is the theme of your application.
         //
@@ -57,7 +61,7 @@ class MyApp extends StatelessWidget {
         //
         // This works for code too, not just values: Most code changes can be
         // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
       home: LoginPage(),
     );

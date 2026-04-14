@@ -122,6 +122,41 @@ class _CustomerSupportChatPageState extends State<CustomerSupportChatPage> {
         }
 
         if (snapshot.hasError) {
+          final errorCode = snapshot.error.toString();
+          if (errorCode.contains('PERMISSION_DENIED')) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.lock_outline, size: 80, color: Colors.red[300]),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Access Denied',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.red,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      'Unable to load your support chats.\n\nPlease ensure you are logged in and try again.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back),
+                    label: const Text('Go Back'),
+                  ),
+                ],
+              ),
+            );
+          }
           return Center(
             child: Text('Error: ${snapshot.error}'),
           );
@@ -348,12 +383,19 @@ class _CustomerSupportChatPageState extends State<CustomerSupportChatPage> {
       }
     } catch (e) {
       print('Error sending message: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to send message. Please try again.'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        final errorMessage = e.toString().contains('PERMISSION_DENIED')
+            ? 'Permission denied. Please ensure you are logged in properly.'
+            : 'Failed to send message. Please try again.';
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     }
   }
 

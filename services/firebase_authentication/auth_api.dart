@@ -279,7 +279,7 @@ class AuthService {
       return user;
     } on FirebaseAuthException catch (e) {
       print('Sign Up Error: ${e.message}');
-      throw e; // Re-throw to handle in UI
+      rethrow; // Re-throw to handle in UI
     } catch (e) {
       print('Unknown Sign Up Error: $e');
       throw Exception('Sign up failed: $e');
@@ -302,7 +302,7 @@ class AuthService {
       return result.user;
     } on FirebaseAuthException catch (e) {
       print('Sign In Error: ${e.message}');
-      throw e; // Re-throw to handle in UI
+      rethrow; // Re-throw to handle in UI
     } catch (e) {
       print('Unknown Sign In Error: $e');
       throw Exception('Sign in failed: $e');
@@ -378,7 +378,7 @@ class AuthService {
       return userCredential;
     } on FirebaseAuthException catch (e) {
       print('Google Sign In Error: ${e.code} - ${e.message}');
-      throw e;
+      rethrow;
     } catch (e) {
       print('Unknown Google Sign In Error: $e');
       throw Exception('Google sign in failed: $e');
@@ -523,7 +523,7 @@ class AuthService {
       await _auth.sendPasswordResetEmail(email: email);
     } on FirebaseAuthException catch (e) {
       print('Password reset error: ${e.message}');
-      throw e;
+      rethrow;
     } catch (e) {
       print('Unknown password reset error: $e');
       throw Exception('Password reset failed: $e');

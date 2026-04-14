@@ -52,6 +52,8 @@ class _BookAppointmentWithPaymentPageState
   // Doctor Details
   Doctor? doctor;
   double consultationFee = 0.0;
+  double doctorRating = 0.0;  // Doctor's average rating
+  int ratingCount = 0;  // Number of ratings
 
   // Payment Screenshot
   File? paymentScreenshot;
@@ -89,9 +91,45 @@ class _BookAppointmentWithPaymentPageState
               ? doctor!.onlineConsultationFee
               : doctor!.homeVisitFee;
         });
+        
+        // Fetch doctor's rating
+        await _fetchDoctorRating();
       }
     } catch (e) {
       print('Error fetching doctor details: $e');
+    }
+  }
+
+  Future<void> _fetchDoctorRating() async {
+    try {
+      // Query all ratings where doctorId matches
+      final snapshot = await FirebaseFirestore.instance
+          .collection('consultation_ratings')
+          .where('doctorId', isEqualTo: widget.doctorId)
+          .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        double totalRating = 0;
+        int count = 0;
+        
+        for (var doc in snapshot.docs) {
+          final rating = doc['ratingValue'] as num?;
+          if (rating != null) {
+            totalRating += rating.toDouble();
+            count++;
+          }
+        }
+        
+        if (count > 0) {
+          setState(() {
+            doctorRating = totalRating / count;
+            ratingCount = count;
+          });
+          print('[BookAppointment] Doctor $widget.doctorId rating: $doctorRating ($count ratings)');
+        }
+      }
+    } catch (e) {
+      print('Error fetching doctor rating: $e');
     }
   }
 
@@ -224,6 +262,7 @@ class _BookAppointmentWithPaymentPageState
         paymentScreenshotUrl: screenshotUrl,
         paymentStatus: 'paid',
         paymentDate: Timestamp.now(),
+        slotDuration: 30, // ← Default 30 min (will be configurable per slot later)
       );
 
       final appointmentId = await _appointmentService.createAppointment(appointment);
@@ -401,6 +440,39 @@ class _BookAppointmentWithPaymentPageState
                     "${doctor!.specialization ?? 'Specialist'}",
                     style: const TextStyle(fontSize: 12, color: Colors.black45),
                   ),
+                // Doctor rating display
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    // Show stars
+                    ...List.generate(5, (index) {
+                      final filledStars = doctorRating.toInt();
+                      final isHalfStar = doctorRating - filledStars > 0.5 && index == filledStars;
+                      
+                      return Icon(
+                        index < filledStars
+                            ? Icons.star
+                            : isHalfStar
+                                ? Icons.star_half
+                                : Icons.star_border,
+                        color: Colors.amber,
+                        size: 16,
+                      );
+                    }),
+                    const SizedBox(width: 6),
+                    // Rating number and count
+                    Text(
+                      doctorRating > 0
+                          ? '${doctorRating.toStringAsFixed(1)} ($ratingCount)'
+                          : 'No ratings',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           )
@@ -588,20 +660,148 @@ class _BookAppointmentWithPaymentPageState
       spacing: 10,
       runSpacing: 10,
       children: timeSlots.map((slot) {
-        final isSelected = selectedSlot == slot;
-        return ChoiceChip(
-          label: Text(slot),
-          selected: isSelected,
-          selectedColor: darkTeal,
-          backgroundColor: Colors.grey[200],
-          labelStyle: TextStyle(
-            color: isSelected ? Colors.white : Colors.black,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-          ),
-          onSelected: (_) => setState(() => selectedSlot = slot),
+        return FutureBuilder<Map<String, dynamic>>(
+          // Add key with date to force rebuild when date changes
+          key: ValueKey('${slot}_${selectedDate.toString()}'),
+          future: _getSlotStatus(slot),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) {
+              return const Chip(label: Text('Loading...'));
+            }
+
+            final slotStatus = snapshot.data!;
+            final isBooked = slotStatus['isBooked'] as bool;
+            final isTimePassed = slotStatus['isTimePassed'] as bool;
+            final canSelect = !isBooked && !isTimePassed;
+            
+            late String statusLabel;
+            late Color statusColor;
+            late IconData statusIcon;
+
+            if (isTimePassed) {
+              statusLabel = 'یہ وقت گزر گیا ہے';
+              statusColor = Colors.red;
+              statusIcon = Icons.schedule;
+            } else if (isBooked) {
+              statusLabel = 'بک شدہ';
+              statusColor = Colors.orange;
+              statusIcon = Icons.block;
+            } else {
+              statusLabel = slot;
+              statusColor = darkTeal;
+              statusIcon = Icons.check;
+            }
+
+            return Tooltip(
+              message: isTimePassed ? 'This slot time has passed' : 
+                       isBooked ? 'This slot is already booked' : 
+                       'Available slot',
+              child: ChoiceChip(
+                label: isBooked || isTimePassed
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(statusIcon, size: 14),
+                          const SizedBox(width: 4),
+                          Text(statusLabel, style: const TextStyle(fontSize: 11)),
+                        ],
+                      )
+                    : Text(slot),
+                selected: selectedSlot == slot && canSelect,
+                selectedColor: canSelect ? darkTeal : Colors.grey.shade300,
+                backgroundColor: isTimePassed
+                    ? Colors.red.shade50
+                    : isBooked
+                        ? Colors.orange.shade50
+                        : Colors.white,
+                labelStyle: TextStyle(
+                  color: canSelect && selectedSlot == slot
+                      ? Colors.white
+                      : isTimePassed
+                          ? Colors.red
+                          : isBooked
+                              ? Colors.orange
+                              : Colors.black,
+                  fontWeight: selectedSlot == slot ? FontWeight.bold : FontWeight.normal,
+                ),
+                onSelected: canSelect ? (_) => setState(() => selectedSlot = slot) : null,
+              ),
+            );
+          },
         );
       }).toList(),
     );
+  }
+
+  /// Check if a slot is booked or if time has passed
+  Future<Map<String, dynamic>> _getSlotStatus(String slot) async {
+    try {
+      // Check if time has passed (only for today)
+      final now = DateTime.now();
+      final isToday = selectedDate.year == now.year &&
+          selectedDate.month == now.month &&
+          selectedDate.day == now.day;
+
+      bool isTimePassed = false;
+      if (isToday) {
+        // Parse slot time - format is "09:00 AM" or "02:00 PM"
+        try {
+          // Remove AM/PM and get the time part
+          final timeWithoutPeriod = slot.replaceAll('AM', '').replaceAll('PM', '').trim();
+          final timeParts = timeWithoutPeriod.split(':');
+          
+          if (timeParts.length == 2) {
+            var hour = int.parse(timeParts[0]);
+            final minute = int.parse(timeParts[1]);
+            
+            // Convert to 24-hour format
+            if (slot.contains('PM') && hour != 12) {
+              hour += 12;
+            } else if (slot.contains('AM') && hour == 12) {
+              hour = 0;
+            }
+            
+            final slotTime = DateTime(now.year, now.month, now.day, hour, minute);
+            isTimePassed = now.isAfter(slotTime);
+          }
+        } catch (e) {
+          print('[BookAppointmentWithPayment] Error parsing time: $e');
+        }
+      }
+
+      // Check if slot is already booked
+      final snapshot = await FirebaseFirestore.instance
+          .collection('appointments')
+          .where('doctorId', isEqualTo: widget.doctorId)
+          .where('time', isEqualTo: slot)
+          .where('date', isEqualTo: Timestamp.fromDate(DateTime(
+            selectedDate.year,
+            selectedDate.month,
+            selectedDate.day,
+          )))
+          .get();
+
+      // Check if any non-declined appointments exist
+      bool isBooked = false;
+      for (var doc in snapshot.docs) {
+        final status = doc['status'] as String? ?? '';
+        if (status.toLowerCase() != 'declined' && status.toLowerCase() != 'cancelled') {
+          isBooked = true;
+          break;
+        }
+      }
+
+      return {
+        'isBooked': isBooked,
+        'isTimePassed': isTimePassed,
+      };
+    } catch (e) {
+      print('[BookAppointmentWithPayment] Error in _getSlotStatus: $e');
+      return {
+        'isBooked': false,
+        'isTimePassed': false,
+      };
+    }
   }
 
   Widget _problemTextField() {

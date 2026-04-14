@@ -258,7 +258,8 @@
 
 // }
 
-// -----------------------Better UI-------------------------
+// -----------------------Better UI with Full Appointment Details-------------------------
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
@@ -276,12 +277,100 @@ class NotificationsPage extends StatefulWidget {
 
 class _NotificationsPageState extends State<NotificationsPage> {
   final NotificationService _notificationService = NotificationService();
+  Timer? _reminderTimer;
 
   // --- Premium Theme Colors ---
   final Color darkTeal = const Color(0xFF00796B);
   final Color mediumTeal = const Color(0xFF4DB6AC);
   final Color lightTeal = const Color(0xFFE0F2F1); // Extra light for background
   final Color accentGold = const Color(0xFFFFB300); // For important highlights
+
+  @override
+  void initState() {
+    super.initState();
+    _scanUpcomingConsultationReminders();
+    _reminderTimer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) => _scanUpcomingConsultationReminders(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _reminderTimer?.cancel();
+    super.dispose();
+  }
+
+  DateTime? _tryParseConsultationStart(Map<String, dynamic> appointment) {
+    final scheduled = appointment['consultationScheduledStartAt'];
+    if (scheduled is Timestamp) return scheduled.toDate();
+
+    final dateTs = appointment['date'];
+    final timeText = (appointment['time'] ?? '').toString().trim();
+    if (dateTs is! Timestamp) return null;
+
+    final date = dateTs.toDate();
+    if (timeText.isEmpty) return DateTime(date.year, date.month, date.day, 9, 0);
+
+    final match = RegExp(r'^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$').firstMatch(timeText);
+    if (match != null) {
+      var hour = int.tryParse(match.group(1) ?? '0') ?? 0;
+      final minute = int.tryParse(match.group(2) ?? '0') ?? 0;
+      final meridiem = (match.group(3) ?? '').toUpperCase();
+      if (meridiem == 'PM' && hour < 12) hour += 12;
+      if (meridiem == 'AM' && hour == 12) hour = 0;
+      return DateTime(date.year, date.month, date.day, hour, minute);
+    }
+
+    return DateTime(date.year, date.month, date.day, 9, 0);
+  }
+
+  Future<void> _scanUpcomingConsultationReminders() async {
+    final userId = AuthService.currentUser?.uid;
+    if (userId == null) return;
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('appointments')
+          .where('userId', isEqualTo: userId)
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      final now = DateTime.now();
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final startAt = _tryParseConsultationStart(data);
+        if (startAt == null || now.isAfter(startAt)) continue;
+
+        final reminderLeadMinutes = 10;
+        final diffMinutes = startAt.difference(now).inMinutes;
+
+        if (diffMinutes > reminderLeadMinutes || diffMinutes < 0) {
+          continue;
+        }
+
+        final reminderFor = data['consultationReminderFor'];
+        final alreadySentForThisStart = reminderFor is Timestamp &&
+            reminderFor.toDate().isAtSameMomentAs(startAt);
+        if (alreadySentForThisStart) continue;
+
+        await _notificationService.sendNotification(
+          receiverId: userId,
+          title: 'Consultation Reminder',
+          message:
+              'Your consultation will start in $diffMinutes minutes. Please be ready.',
+          appointmentId: doc.id,
+          type: 'consultation_reminder',
+        );
+
+        await doc.reference.set({
+          'consultationReminderFor': Timestamp.fromDate(startAt),
+          'consultationReminderSentAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -336,11 +425,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
                         topRight: Radius.circular(30),
                       ),
                       child: StreamBuilder<QuerySnapshot>(
-                        key: ValueKey('user_notifications_$userId'),
                         stream: FirebaseFirestore.instance
                             .collection('notifications')
                             .where('receiverId', isEqualTo: userId)
-                            .orderBy('createdAt', descending: true)
                             .snapshots(),
                         builder: (context, snapshot) {
                           if (snapshot.connectionState ==
@@ -350,23 +437,49 @@ class _NotificationsPageState extends State<NotificationsPage> {
                             );
                           }
 
-                          final notifications = snapshot.data?.docs ?? [];
+                          final notificationsList = snapshot.data?.docs.toList() ?? [];
+                          // Sort by createdAt descending (workaround while index builds)
+                          notificationsList.sort((a, b) {
+                            final aTime = (a['createdAt'] as Timestamp?)?.toDate() ?? DateTime(1970);
+                            final bTime = (b['createdAt'] as Timestamp?)?.toDate() ?? DateTime(1970);
+                            return bTime.compareTo(aTime);
+                          });
 
-                          if (notifications.isEmpty) {
+                          if (notificationsList.isEmpty) {
                             return _buildEmptyState();
                           }
 
                           return ListView.builder(
                             padding: const EdgeInsets.only(top: 25, bottom: 20),
-                            itemCount: notifications.length,
+                            itemCount: notificationsList.length,
                             physics: const BouncingScrollPhysics(),
                             itemBuilder: (context, index) {
-                              final notifDoc = notifications[index];
+                              final notifDoc = notificationsList[index];
                               final notif =
                                   notifDoc.data() as Map<String, dynamic>;
-                              return _buildBeautifulNotifCard(
-                                notif,
-                                notifDoc.id,
+                              // 🔥 Show notifications for ALL appointments - not just pending
+                              return FutureBuilder<DocumentSnapshot?>(
+                                future: _getAppointmentForNotification(notif),
+                                builder: (context, appointmentSnapshot) {
+                                  if (!appointmentSnapshot.hasData || appointmentSnapshot.data == null) {
+                                    return _buildBeautifulNotifCard(
+                                      notif,
+                                      notifDoc.id,
+                                    );
+                                  }
+                                  final appointmentData = appointmentSnapshot.data!.data() as Map<String, dynamic>?;
+                                  if (appointmentData == null) {
+                                    return _buildBeautifulNotifCard(
+                                      notif,
+                                      notifDoc.id,
+                                    );
+                                  }
+                                  // 🔥 Show notification for ALL statuses: pending, approved, completed, declined
+                                  return _buildBeautifulNotifCard(
+                                    notif,
+                                    notifDoc.id,
+                                  );
+                                },
                               );
                             },
                           );
@@ -432,14 +545,293 @@ class _NotificationsPageState extends State<NotificationsPage> {
   Widget _buildBeautifulNotifCard(Map<String, dynamic> data, String notifId) {
     bool isRead = data['isRead'] ?? false;
     String type = data['type'] ?? '';
-    bool isApproved = type == 'appointment_approved';
+    bool isApproved = type == 'appointment_approved' || type == 'appointment_reapproved';
+    final appointmentId = data['appointmentId'] as String?;
+
+    // For appointment notifications, fetch full details
+    if ((type == 'appointment_approved' || type == 'appointment_reapproved' || type == 'appointment_request') && appointmentId != null) {
+      return FutureBuilder<DocumentSnapshot>(
+        future: FirebaseFirestore.instance
+            .collection('appointments')
+            .doc(appointmentId)
+            .get(),
+        builder: (context, apptSnapshot) {
+          if (!apptSnapshot.hasData) {
+            return _buildSimpleNotificationCard(data, notifId);
+          }
+
+          final apptData = apptSnapshot.data!.data() as Map<String, dynamic>?;
+          if (apptData == null) {
+            return _buildSimpleNotificationCard(data, notifId);
+          }
+
+          final doctorId = apptData['doctorId'] as String?;
+
+          return FutureBuilder<DocumentSnapshot>(
+            future: doctorId != null
+                ? FirebaseFirestore.instance.collection('users').doc(doctorId).get()
+                : Future.value(null),
+            builder: (context, doctorSnapshot) {
+              final doctorData =
+                  (doctorSnapshot.data?.data() as Map<String, dynamic>?) ?? {};
+              final doctorName = doctorData['name'] ?? 'Unknown Doctor';
+              final doctorPhone = doctorData['phone'] ?? 'N/A';
+
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.all(15),
+                decoration: BoxDecoration(
+                  color: isRead ? Colors.white : lightTeal.withOpacity(0.4),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isRead ? Colors.grey.shade100 : mediumTeal.withOpacity(0.3),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: isRead
+                          ? Colors.black.withOpacity(0.02)
+                          : darkTeal.withOpacity(0.08),
+                      blurRadius: 15,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                data['title'] ?? 'Appointment Update',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                  color: darkTeal,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _formatTime(data['createdAt']),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (!isRead)
+                          Container(
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: Colors.orange,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Doctor Info
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[50],
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Doctor Information',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey[800],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            doctorName,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            doctorPhone,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Appointment Details
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[50],
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Appointment Details',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey[800],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          _buildDetailRow('Animal', apptData['animalName'] ?? 'N/A'),
+                          const SizedBox(height: 6),
+                          _buildDetailRow('Date', _formatAppointmentDate(apptData['date'])),
+                          const SizedBox(height: 6),
+                          _buildDetailRow('Time', apptData['time'] ?? 'N/A'),
+                          const SizedBox(height: 6),
+                          _buildDetailRow('Type', apptData['consultationType'] ?? 'N/A'),
+                          const SizedBox(height: 6),
+                          _buildDetailRow('Cost', '\$${(apptData['paymentAmount'] ?? 0).toStringAsFixed(2)}'),
+                        ],
+                      ),
+                    ),
+
+                    // Problem (if exists)
+                    if ((apptData['problem'] ?? '').toString().isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Problem Description',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange.shade800,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              apptData['problem'] ?? '',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.orange.shade700,
+                                height: 1.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    // Screenshot for refund
+                    if (data['screenshotUrl'] != null &&
+                        data['screenshotUrl'].toString().isNotEmpty &&
+                        (type == 'refund_completed' || type == 'refund_initiated')) ...[
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: () => _showFullScreenImage(context, data['screenshotUrl']),
+                        child: Container(
+                          height: 150,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.green.shade200, width: 2),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.network(
+                              data['screenshotUrl'],
+                              fit: BoxFit.cover,
+                              loadingBuilder: (context, child, loadingProgress) {
+                                if (loadingProgress == null) return child;
+                                return Center(
+                                  child: CircularProgressIndicator(
+                                    value: loadingProgress.expectedTotalBytes != null
+                                        ? loadingProgress.cumulativeBytesLoaded /
+                                            loadingProgress.expectedTotalBytes!
+                                        : null,
+                                    color: Colors.green,
+                                  ),
+                                );
+                              },
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  color: Colors.grey[200],
+                                  child: const Icon(Icons.broken_image, color: Colors.grey),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+
+                    const SizedBox(height: 14),
+
+                    // Action Button
+                    if (isApproved)
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () => _handleChatNavigation(data),
+                          icon: const Icon(Icons.chat_bubble_rounded, size: 17),
+                          label: const Text('Open Consultation'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: darkTeal,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 11),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      );
+    }
+
+    // For non-appointment notifications, show simple card
+    return _buildSimpleNotificationCard(data, notifId);
+  }
+
+  Widget _buildSimpleNotificationCard(Map<String, dynamic> data, String notifId) {
+    bool isRead = data['isRead'] ?? false;
+    String type = data['type'] ?? '';
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: isRead ? Colors.white : lightTeal.withOpacity(0.4),
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: isRead ? Colors.grey.shade100 : mediumTeal.withOpacity(0.3),
           width: 1.5,
@@ -457,247 +849,87 @@ class _NotificationsPageState extends State<NotificationsPage> {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(20),
           onTap: () => isRead ? null : _notificationService.markAsRead(notifId),
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(14),
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // Avatar with status indicator
-                    Stack(
-                      children: [
-                        Container(
-                          height: 55,
-                          width: 55,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                _getIconColor(type).withOpacity(0.2),
-                                _getIconColor(type).withOpacity(0.05),
-                              ],
-                            ),
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          child: Icon(
-                            _getIconData(type),
-                            color: _getIconColor(type),
-                            size: 28,
-                          ),
-                        ),
-                        if (!isRead)
-                          Positioned(
-                            right: 0,
-                            top: 0,
-                            child: Container(
-                              height: 12,
-                              width: 12,
-                              decoration: BoxDecoration(
-                                color: Colors.orange,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: Colors.white,
-                                  width: 2,
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(width: 15),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                _getTypeLabel(type),
-                                style: TextStyle(
-                                  color: _getIconColor(type),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  letterSpacing: 1,
-                                ),
-                              ),
-                              Text(
-                                _formatTime(data['createdAt']),
-                                style: TextStyle(
-                                  color: Colors.grey.shade500,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            data['title'] ?? 'New Update',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 17,
-                              color: Color(0xFF1A237E),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            data['message'] ?? '',
-                            style: TextStyle(
-                              color: Colors.grey.shade700,
-                              fontSize: 14,
-                              height: 1.4,
-                            ),
-                          ),
-                          // Show refund screenshot if exists
-                          if (data['screenshotUrl'] != null && 
-                              data['screenshotUrl'].toString().isNotEmpty &&
-                              data['type'] == 'refund_completed') ...[
-                            const SizedBox(height: 12),
-                            GestureDetector(
-                              onTap: () => _showFullScreenImage(context, data['screenshotUrl']),
-                              child: Container(
-                                height: 200,
-                                width: double.infinity,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: Colors.green.withOpacity(0.3),
-                                    width: 2,
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.green.withOpacity(0.1),
-                                      blurRadius: 8,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ],
-                                ),
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(10),
-                                      child: Image.network(
-                                        data['screenshotUrl'],
-                                        fit: BoxFit.cover,
-                                        loadingBuilder: (context, child, loadingProgress) {
-                                          if (loadingProgress == null) return child;
-                                          return Center(
-                                            child: CircularProgressIndicator(
-                                              value: loadingProgress.expectedTotalBytes != null
-                                                  ? loadingProgress.cumulativeBytesLoaded /
-                                                      loadingProgress.expectedTotalBytes!
-                                                  : null,
-                                              color: Colors.green,
-                                            ),
-                                          );
-                                        },
-                                        errorBuilder: (context, error, stackTrace) {
-                                          return Container(
-                                            color: Colors.grey[200],
-                                            child: const Column(
-                                              mainAxisAlignment: MainAxisAlignment.center,
-                                              children: [
-                                                Icon(Icons.broken_image, size: 50, color: Colors.grey),
-                                                SizedBox(height: 8),
-                                                Text(
-                                                  'Failed to load receipt',
-                                                  style: TextStyle(color: Colors.grey),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                    Positioned(
-                                      top: 8,
-                                      left: 8,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.green.withOpacity(0.9),
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                        child: const Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.receipt, color: Colors.white, size: 16),
-                                            SizedBox(width: 4),
-                                            Text(
-                                              'Payment Proof',
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    Positioned(
-                                      bottom: 8,
-                                      right: 8,
-                                      child: Container(
-                                        padding: const EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withOpacity(0.6),
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                        child: const Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.zoom_in, color: Colors.white, size: 16),
-                                            SizedBox(width: 4),
-                                            Text(
-                                              'Tap to view',
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 11,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
+                      child: Text(
+                        _getTypeLabel(type),
+                        style: TextStyle(
+                          color: _getIconColor(type),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      _formatTime(data['createdAt']),
+                      style: TextStyle(
+                        color: Colors.grey.shade500,
+                        fontSize: 11,
                       ),
                     ),
                   ],
                 ),
-                if (isApproved) ...[
-                  const SizedBox(height: 15),
-                  Container(
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(colors: [darkTeal, mediumTeal]),
-                      borderRadius: BorderRadius.circular(15),
-                    ),
-                    child: ElevatedButton.icon(
-                      onPressed: () => _handleChatNavigation(data),
-                      icon: const Icon(
-                        Icons.chat_bubble_rounded,
-                        size: 18,
-                        color: Colors.white,
+                const SizedBox(height: 8),
+                Text(
+                  data['title'] ?? '',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                    color: Color(0xFF1A237E),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  data['message'] ?? '',
+                  style: TextStyle(
+                    color: Colors.grey.shade700,
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+                // Show refund screenshot for simple refund notifications
+                if (data['screenshotUrl'] != null &&
+                    data['screenshotUrl'].toString().isNotEmpty &&
+                    (type == 'refund_completed' || type == 'refund_initiated')) ...[
+                  const SizedBox(height: 12),
+                  GestureDetector(
+                    onTap: () => _showFullScreenImage(context, data['screenshotUrl']),
+                    child: Container(
+                      height: 140,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.green.shade200, width: 2),
                       ),
-                      label: const Text("Open Consultation"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.transparent,
-                        shadowColor: Colors.transparent,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(15),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.network(
+                          data['screenshotUrl'],
+                          fit: BoxFit.cover,
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return Center(
+                              child: CircularProgressIndicator(
+                                color: Colors.green,
+                              ),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) {
+                            return Container(
+                              color: Colors.grey[200],
+                              child: const Icon(Icons.broken_image, color: Colors.grey),
+                            );
+                          },
                         ),
                       ),
                     ),
@@ -711,12 +943,42 @@ class _NotificationsPageState extends State<NotificationsPage> {
     );
   }
 
+  Widget _buildDetailRow(String label, String value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(fontSize: 11, color: Colors.grey[700]),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+
+  String _formatAppointmentDate(dynamic dateField) {
+    if (dateField is Timestamp) {
+      final date = dateField.toDate();
+      return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+    }
+    return 'N/A';
+  }
+
   // --- Helper Methods for UI Polish ---
 
   String _getTypeLabel(String type) {
     switch (type) {
       case 'appointment_approved':
         return 'APPROVED';
+      case 'appointment_reapproved':
+        return 'RE-APPROVED';
       case 'appointment_declined':
         return 'DECLINED';
       case 'refund_completed':
@@ -732,6 +994,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
   IconData _getIconData(String type) {
     if (type == 'appointment_approved') return Icons.verified_user_rounded;
+    if (type == 'appointment_reapproved') return Icons.update_rounded;
     if (type == 'appointment_declined') return Icons.event_busy_rounded;
     if (type == 'refund_completed') return Icons.monetization_on_rounded;
     if (type == 'refund_initiated') return Icons.pending_actions_rounded;
@@ -741,6 +1004,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
   Color _getIconColor(String type) {
     if (type == 'appointment_approved') return Colors.green.shade600;
+    if (type == 'appointment_reapproved') return Colors.teal.shade700;
     if (type == 'appointment_declined') return Colors.red.shade600;
     if (type == 'refund_completed') return Colors.green.shade700;
     if (type == 'refund_initiated') return Colors.orange.shade600;
@@ -798,6 +1062,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
                 receiverName: doctor['name'],
                 receiverImage: doctor['imageUrl'] ?? '',
                 isOnline: true,
+                appointmentId: data['appointmentId']?.toString(),
+                animalName: appointment['animalName']?.toString(),
               ),
             ),
           );
@@ -809,6 +1075,23 @@ class _NotificationsPageState extends State<NotificationsPage> {
       }
     } catch (e) {
       debugPrint(e.toString());
+    }
+  }
+
+  /// Get appointment document for a notification to check its status
+  Future<DocumentSnapshot?> _getAppointmentForNotification(Map<String, dynamic> notification) async {
+    try {
+      final appointmentId = notification['appointmentId'] as String?;
+      if (appointmentId == null || appointmentId.isEmpty) {
+        return null;
+      }
+      return await FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(appointmentId)
+          .get();
+    } catch (e) {
+      debugPrint('Error fetching appointment for notification: $e');
+      return null;
     }
   }
 

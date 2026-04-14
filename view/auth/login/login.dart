@@ -683,6 +683,7 @@ class LoginPage extends StatefulWidget {
 class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixin {
   bool _obscureText = true;
   bool _isLoading = false;
+  bool _isNavigatingAway = false;
 
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
@@ -722,6 +723,7 @@ class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixi
     }
 
     setState(() => _isLoading = true);
+    _isNavigatingAway = false;
     
     try {
       // 1. Authenticate with Firebase
@@ -787,7 +789,7 @@ class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixi
     } catch (e) {
       _showError('An error occurred: ${e.toString()}');
     } finally {
-      if (mounted) {
+      if (mounted && !_isNavigatingAway) {
         setState(() => _isLoading = false);
       }
     }
@@ -803,6 +805,7 @@ class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixi
     }
 
     setState(() => _isLoading = true);
+    _isNavigatingAway = false;
     
     try {
       final AuthService authService = AuthService();
@@ -852,7 +855,7 @@ class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixi
     } catch (e) {
       _showError('Google Sign-In failed: ${e.toString()}');
     } finally {
-      if (mounted) {
+      if (mounted && !_isNavigatingAway) {
         setState(() => _isLoading = false);
       }
     }
@@ -987,6 +990,7 @@ class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixi
   /// ---------------- ROLE NAVIGATION ----------------
   void _navigateByRole(UserRole role) {
     if (!mounted) return;
+    _isNavigatingAway = true;
     
     Widget destination;
     if (role == UserRole.admin) {
@@ -997,15 +1001,19 @@ class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixi
       destination = UserDashboardPage();
     }
 
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => destination),
-    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => destination),
+      );
+    });
   }
 
   /// ---------------- DOCTOR NAVIGATION WITH PROFILE CHECK ----------------
   void _navigateDoctor(bool profileCompleted) {
     if (!mounted) return;
+    _isNavigatingAway = true;
     
     Widget destination;
     if (profileCompleted) {
@@ -1016,39 +1024,45 @@ class LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixi
       destination = const DoctorProfilePage();
     }
 
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => destination),
-    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => destination),
+      );
+    });
   }
 
   /// ---------------- ERROR SNACKBAR ----------------
   void _showError(String msg) {
     if (!mounted) return;
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.error_outline, color: Colors.white),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                msg,
-                style: const TextStyle(fontSize: 14),
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _isNavigatingAway) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  msg,
+                  style: const TextStyle(fontSize: 14),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.all(16),
+          duration: const Duration(seconds: 4),
         ),
-        backgroundColor: Colors.red.shade700,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
-        margin: const EdgeInsets.all(16),
-        duration: const Duration(seconds: 4),
-      ),
-    );
+      );
+    });
   }
 
   /// ---------------- UI ----------------

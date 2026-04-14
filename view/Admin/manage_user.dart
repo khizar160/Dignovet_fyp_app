@@ -80,6 +80,7 @@ class _ManageUsersPageState extends State<ManageUsersPage> {
 
   /// Load all users with role 'user'
   Future<void> _loadUsers() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     log('Loading users from Firebase...');
 
@@ -130,6 +131,7 @@ class _ManageUsersPageState extends State<ManageUsersPage> {
       _filteredUsers = [];
     }
 
+    if (!mounted) return;
     setState(() => _loading = false);
   }
 
@@ -214,6 +216,7 @@ class _ManageUsersPageState extends State<ManageUsersPage> {
 
   /// Show SnackBar
   void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),

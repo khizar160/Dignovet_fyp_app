@@ -10,9 +10,10 @@ class NotificationService {
     required String message,
     required String appointmentId,
     required String type, // e.g., 'appointment', 'message', etc.
+    String? screenshotUrl, // Optional: For refund proof screenshots
   }) async {
     try {
-      await _db.collection('notifications').add({
+      final notificationData = {
         'receiverId': receiverId,
         'title': title,
         'message': message,
@@ -20,7 +21,15 @@ class NotificationService {
         'type': type,
         'isRead': false,
         'createdAt': Timestamp.now(),
-      });
+      };
+
+      // Add screenshot URL if provided (for refund notifications)
+      if (screenshotUrl != null && screenshotUrl.isNotEmpty) {
+        notificationData['screenshotUrl'] = screenshotUrl;
+        print('[Notification] Including screenshot: $screenshotUrl');
+      }
+
+      await _db.collection('notifications').add(notificationData);
       print('Notification sent to $receiverId: $title');
     } catch (e) {
       print('Error sending notification: $e');
